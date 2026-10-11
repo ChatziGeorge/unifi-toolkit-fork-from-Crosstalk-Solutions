@@ -191,6 +191,16 @@ All v2 events are normalized before the scheduler sees them — the scheduler on
   silently. Removed the on-screen text claiming the controller ignores the change.
   Column stays read-only because the control is site-level, not per-network.
 
+### v1.13.1 (RELEASED 2026-10-09 — tag `v1.13.1` on `79810f2`, `:latest`)
+- House Arrest 0.15.12: "What this blocks" explains WHY a result changed
+  (`networkChangeNote()` names the network + setting, e.g. isolation on
+  IDIoT); all 8 diagrams now label the left node "Devices on other networks"
+  (5 said "Other devices", which read as including same-VLAN neighbours).
+- The release build failed 3x at "Log in to Docker Hub" (Docker Hub outage,
+  `context deadline exceeded`) and passed on a 4:00 pm re-run. A Docker Hub
+  login failure blocks the GHCR push too — the job stops before either.
+- Chris's PC runs `:latest` via `docker compose` (same `./data` + `.env`).
+
 ### v1.13.0 (RELEASED 2026-10-09 — tag `v1.13.0` on `05ca56b`, `:latest`)
 Beta announced on Discord 2026-09-22; released 2026-10-09 with House Arrest
 0.15.11 and a GitHub Release. Dependabot PRs (#125–129, #131, #132) were held
