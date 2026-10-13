@@ -215,9 +215,11 @@ All v2 events are normalized before the scheduler sees them — the scheduler on
 ### v1.13.0 (RELEASED 2026-10-09 — tag `v1.13.0` on `05ca56b`, `:latest`)
 Beta announced on Discord 2026-09-22; released 2026-10-09 with House Arrest
 0.15.11 and a GitHub Release. Dependabot PRs (#125–129, #131, #132) were held
-through the beta and can now go in one at a time via `:edge`; #127 (starlette
-major) is the risky one — a dependency rebuild is how the v1.11.3 outage
-happened.
+through the beta. UPDATE 2026-10-13: #129, #131, #132 merged (CI/dev only,
+stale v11 verified by a manual dispatch). #127 closed with `@dependabot ignore
+this major version` (starlette 1.x stays pinned out until a deliberate fastapi
+upgrade). Left: #126 pydantic-settings, #128 sqlalchemy (runtime: one at a
+time via `:edge`), #125 bcrypt 5 (major; needs a real login test first).
 - **House Arrest 0.15.7–0.15.11 (2026-10-08/09)** — banner names the tab and
   flags DNS Lockdowns whose network was deleted; scenario picture chosen by
   result (no longer vanishes on isolated networks); mDNS/isolation wording;
