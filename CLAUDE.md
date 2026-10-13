@@ -191,6 +191,17 @@ All v2 events are normalized before the scheduler sees them — the scheduler on
   silently. Removed the on-screen text claiming the controller ignores the change.
   Column stays read-only because the control is site-level, not per-network.
 
+### v1.13.2 (RELEASED 2026-10-13 — tag `v1.13.2` on `8fdd275`, `:latest`)
+- Hotfix #133: the controller returns `vlan` as a string on some networks and
+  an int on others in ONE `rest/networkconf` reply (2 reporters, UDM SE + UDM
+  Pro). The isolation-matrix sort raised TypeError, `/arrest/api/inspect`
+  500'd. `P.vlan_id()` + normalisation in `get_networks()`. House Arrest 0.15.13.
+- #134: `docker compose up` before `setup.sh` makes `.env` a directory;
+  INSTALLATION.md now covers it.
+- **GitHub Releases are created by hand** (`gh release create`) — the tag
+  workflow only builds images. The dashboard update badge reads Releases, so
+  skipping it means nobody is told to update.
+
 ### v1.13.1 (RELEASED 2026-10-09 — tag `v1.13.1` on `79810f2`, `:latest`)
 - House Arrest 0.15.12: "What this blocks" explains WHY a result changed
   (`networkChangeNote()` names the network + setting, e.g. isolation on
@@ -592,6 +603,11 @@ This is how we discovered the v2 `traffic-flows` filtered payload format (`polic
   with stale scripts to anyone who has loaded the page before (measured: Alpine
   "neighbourOffered is not defined"). Bump the version with any frontend change
   that ships.
+- **UniFi already schedules natively** (measured 2026-10-13): firewall
+  policies carry `schedule` (`ALWAYS`, `EVERY_DAY` + `time_range_start/end`,
+  ...), and CyberSecure content filters carry `schedule`, `categories`,
+  `allow_list`, `block_list`, `network_ids`, `client_macs`. Scheduled /
+  "homework mode" House Arrest requests (#135) were declined on that basis.
 - **UniFi's mDNS proxy filters by service type** (`v2/lan/mdns`, "Service
   Scope: Specific"). "mDNS on" in the matrix does not mean every service
   crosses.
