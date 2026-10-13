@@ -394,6 +394,9 @@ CHANGELOG.md and `docs/house-arrest-design.md`.
   instance and NOMAD2 even while the controller is connected (seen
   2026-09-29). It is not a sign of a lost connection — use `/api/system-status`
   (`connected`, `gateway_model`) for that. Likely a debug-info bug; unfixed.
+  UPDATE 2026-10-12: both instances now return populated gateway fields
+  (model, firmware, ips_mode), so the nulls were intermittent, not constant.
+  Cause still unknown.
 - **Bash heredocs choke on apostrophes in inline Python/JS** in this
   environment (`unexpected EOF while looking for matching '`). For any script
   with quotes in it, write it to the scratchpad with the Write tool and run
