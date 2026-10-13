@@ -1893,6 +1893,23 @@ def _ip_in_subnet(ip: Optional[str], subnet: Optional[str]) -> bool:
         return False
 
 
+def vlan_id(value) -> Optional[int]:
+    """
+    A network's VLAN as an int, or None.
+
+    The controller returns `vlan` as a string on some networks and an int on
+    others in the same `rest/networkconf` response (#133), so it can't be
+    compared or sorted raw.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def build_isolation_matrix(
     networks: List[Dict],
     zones: List[Dict],
@@ -1926,7 +1943,7 @@ def build_isolation_matrix(
             continue
         nid = n.get("_id")
         name = n.get("name") or "(unnamed)"
-        vlan = n.get("vlan")
+        vlan = vlan_id(n.get("vlan"))
         zname = zone_of.get(nid)
 
         cells = {}

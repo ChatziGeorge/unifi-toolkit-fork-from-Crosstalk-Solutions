@@ -959,3 +959,25 @@ class TestReleaseScope:
         for kind in (None, "device", "network"):
             ids = {p["_id"] for p in P.release_targets(self._set(), kind, "hand-made")}
             assert "u1" not in ids
+
+
+class TestVlanId:
+    """#133: the controller mixes string and int VLANs in one response."""
+
+    def test_normalises(self):
+        assert P.vlan_id(3) == 3
+        assert P.vlan_id("2") == 2
+        assert P.vlan_id(" 24 ") == 24
+        assert P.vlan_id(None) is None
+        assert P.vlan_id("") is None
+        assert P.vlan_id("abc") is None
+        assert P.vlan_id(True) is None
+
+    def test_matrix_sorts_mixed_types(self):
+        nets = [
+            {"_id": "b", "name": "B", "purpose": "guest", "vlan": 3},
+            {"_id": "a", "name": "A", "purpose": "corporate", "vlan": "2"},
+            {"_id": "d", "name": "Default", "purpose": "corporate"},
+        ]
+        m = P.build_isolation_matrix(nets, [])
+        assert [r["vlan"] for r in m["rows"]] == [2, 3, None]

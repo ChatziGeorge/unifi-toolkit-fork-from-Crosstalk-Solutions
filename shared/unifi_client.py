@@ -2539,6 +2539,13 @@ class UniFiClient:
                     return []
                 data = await resp.json()
                 networks = data.get('data', [])
+                # `vlan` comes back as a string on some networks and an int
+                # on others in the same response (#133). Normalise to int.
+                # Safe: network writes re-read the raw document themselves.
+                for n in networks:
+                    v = n.get('vlan')
+                    if isinstance(v, str):
+                        n['vlan'] = int(v.strip()) if v.strip().isdigit() else None
                 logger.debug(f"Retrieved {len(networks)} networks")
                 return networks
 

@@ -128,6 +128,8 @@ You'll be prompted to choose between:
 1. **Local** - For LAN-only access (no authentication, no HTTPS)
 2. **Production** - For internet-facing access (authentication + HTTPS)
 
+> **Run setup before `docker compose up`.** The container mounts `./.env` as a file. If it doesn't exist yet, Docker creates an empty `.env` *directory* in its place, and the app starts with no configuration.
+
 ---
 
 ## Local Deployment (LAN Only)
@@ -496,6 +498,7 @@ docker compose logs unifi-toolkit
 
 **Common issues:**
 - Missing `.env` file: Run `./setup.sh`
+- `'.env' exists as a directory`: `docker compose up` ran before setup, so Docker created a directory where the file should be. Run `docker compose down`, `rm -rf .env`, then `./setup.sh` and `docker compose up -d`
 - Missing `ENCRYPTION_KEY`: Regenerate with setup wizard
 - Port 8000 in use: Change `APP_PORT` in `.env`
 

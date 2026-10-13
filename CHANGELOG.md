@@ -2,6 +2,14 @@
 
 All notable changes to UI Toolkit will be documented in this file.
 
+## [1.13.2] - 2026-10-13
+
+### Fixed
+- **House Arrest's Networks tab no longer fails on some consoles (#133).** The controller returns a network's VLAN as text on some networks and as a number on others, in the same reply. Sorting the table compared the two and crashed, so the isolation table never appeared and "Re-read from controller" did nothing. VLANs are now read as numbers everywhere. Thanks to @ndrewk for the report and @kochj23 for finding where the mixed types come from.
+
+### Docs
+- **Installation: run setup before `docker compose up` (#134).** If `.env` doesn't exist yet, Docker creates a directory with that name and the app starts unconfigured. The guide now says so, and the troubleshooting section has the fix.
+
 ## [1.13.1] - 2026-10-09
 
 ### Fixed
