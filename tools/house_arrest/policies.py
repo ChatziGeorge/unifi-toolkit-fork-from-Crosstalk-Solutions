@@ -15,6 +15,7 @@ Two rules this module exists to enforce:
   2. We never emit a policy with `predefined: True`, and callers must never
      delete one.
 """
+import ipaddress
 from typing import Dict, List, Optional, Tuple
 
 # Marker lives in `description`, not `name` — users rename things.
@@ -728,6 +729,24 @@ DHCP_DNS_FIELDS = ("dhcpd_dns_1", "dhcpd_dns_2", "dhcpd_dns_3", "dhcpd_dns_4")
 MAX_DHCP_DNS = len(DHCP_DNS_FIELDS)
 
 
+def check_resolver_ips(resolver_ips: List[str]) -> None:
+    """
+    Refuse anything that is not one IP address per entry.
+
+    An unparseable entry matches no subnet, so classify_resolvers() filed it
+    as an internet resolver and wrote an External ALLOW for it (#138: three
+    space-separated LAN addresses arrived as one string).
+    """
+    for ip in resolver_ips or []:
+        try:
+            ipaddress.ip_address(str(ip).strip())
+        except ValueError:
+            raise ValueError(
+                f"'{ip}' is not an IP address. Enter one address per entry, "
+                f"separated by commas."
+            )
+
+
 def dhcp_dns_payload(resolver_ips: List[str]) -> Dict:
     """
     The network-document fields that make DHCP hand out these resolvers.
@@ -740,6 +759,7 @@ def dhcp_dns_payload(resolver_ips: List[str]) -> Dict:
     ips = [str(ip).strip() for ip in (resolver_ips or []) if str(ip).strip()]
     if not ips:
         raise ValueError("At least one resolver is required")
+    check_resolver_ips(ips)
     if len(ips) > MAX_DHCP_DNS:
         raise ValueError(
             f"DHCP can advertise at most {MAX_DHCP_DNS} name servers; "
@@ -752,8 +772,16 @@ def dhcp_dns_payload(resolver_ips: List[str]) -> Dict:
 
 
 def dhcp_dns_of(network: Dict) -> List[str]:
-    """What DHCP currently hands out on this network."""
-    return [v for v in ((network or {}).get(f) for f in DHCP_DNS_FIELDS) if v]
+    """
+    What DHCP currently hands out on this network.
+
+    UniFi keeps `dhcpd_dns_1..4` after the override is switched off and only
+    clears `dhcpd_dns_enabled`; DHCP then hands out the gateway. Reading the
+    fields without the flag showed long-gone resolvers as current (#136).
+    """
+    if not network or network.get("dhcpd_dns_enabled") is False:
+        return []
+    return [v for v in (network.get(f) for f in DHCP_DNS_FIELDS) if v]
 
 
 def dhcp_dns_conflicts(networks: List[Dict], resolver_ips: List[str]) -> List[str]:
@@ -774,8 +802,7 @@ def dhcp_dns_conflicts(networks: List[Dict], resolver_ips: List[str]) -> List[st
     approved = {str(ip).strip() for ip in resolver_ips or []}
     out = []
     for n in networks or []:
-        handed = [n.get(f"dhcpd_dns_{i}") for i in (1, 2, 3, 4)]
-        handed = [h for h in handed if h]
+        handed = dhcp_dns_of(n)
         if not handed:
             # No override: DHCP points at the gateway, which is not in the
             # approved list either, but the gateway is never blocked by these
@@ -1346,7 +1373,7 @@ def device_dns_resolvers(
     allow: List[str] = []
     skipped: List[str] = []
     for net in device_networks or []:
-        handed = dhcp_dns_of(net) if net.get("dhcpd_dns_enabled") is not False else []
+        handed = dhcp_dns_of(net)
         lan, _wan, _foreign = classify_resolvers(handed, networks, zones, client_zone_id)
         cross = [ip for ip in lan if not _ip_in_subnet(ip, net.get("ip_subnet"))]
         if not cross:

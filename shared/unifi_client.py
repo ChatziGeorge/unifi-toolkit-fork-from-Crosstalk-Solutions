@@ -22,6 +22,7 @@ IDS_IPS_SUPPORTED_MODELS = {
     "UDR7",         # UDR7 (Dream Router 7)
     "UDMA67A",      # UDR7 (Dream Router 7 - actual API model code)
     "UDW",          # UDW (Dream Wall)
+    "UDMEA4C",      # UDM Beast (actual API model code, #139)
     # UXG series (Next-Gen Gateway)
     "UXG",          # UXG Lite (model code is just "UXG" not "UXGLITE")
     "UXGPRO",       # UXG Pro
@@ -52,11 +53,16 @@ IDS_IPS_SUPPORTED_MODELS = {
 EXPRESS_MODEL_CODES = {'UX', 'UXBSDM', 'UX7', 'UDMA69B'}
 
 # UniFi device model code to friendly name mapping
+class TrafficFlowsUnavailable(Exception):
+    """The v2 traffic-flows request failed, as opposed to answering with no events."""
+
+
 UNIFI_MODEL_NAMES = {
     # Gateways / Dream Machines
     "UDM": "UDM",
     "UDMPRO": "UDM Pro",
     "UDMPROMAX": "UDM Pro Max",
+    "UDMEA4C": "UDM Beast",
     "UDMPROSE": "UDM SE",
     "UDMSE": "UDM SE",
     "UDR": "UDR",
@@ -844,6 +850,10 @@ class UniFiClient:
             List of traffic flow dictionaries normalized to legacy field names
             (e.g., src_ip_country, inner_alert_category) via _normalize_v2_event().
             The Threat Watch scheduler depends on this normalization.
+
+        Raises:
+            TrafficFlowsUnavailable: the request failed. An empty list means
+            the controller answered and there were no events.
         """
         if not self._session:
             raise RuntimeError("Not connected to UniFi controller. Call connect() first.")
@@ -888,6 +898,7 @@ class UniFiClient:
 
         Returns None if the server rejects this payload format (triggers fallback).
         Returns [] if format works but no events found.
+        Raises TrafficFlowsUnavailable on any other failure.
 
         Available filter arrays (currently only policy_type is used):
             risk, action, direction, protocol, policy, policy_type, service,
@@ -953,7 +964,7 @@ class UniFiClient:
                         resp_text = await resp.text()
                         logger.error(f"Failed to get traffic flows: HTTP {resp.status}")
                         logger.debug(f"Traffic flows error response: {resp_text[:500] if resp_text else 'empty'}")
-                        return []
+                        raise TrafficFlowsUnavailable(f"HTTP {resp.status}")
 
                     data = await resp.json()
                     flows = data.get('data', [])
@@ -972,9 +983,11 @@ class UniFiClient:
             normalized_events = [self._normalize_v2_event(e) for e in all_events]
             return normalized_events
 
+        except TrafficFlowsUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Failed to get traffic flows (filtered): {e}")
-            return []
+            raise TrafficFlowsUnavailable(str(e))
 
     async def _fetch_traffic_flows_v2_legacy(
         self,
@@ -1011,12 +1024,12 @@ class UniFiClient:
                 async with self._session.post(url, json=payload) as resp:
                     if resp.status == 405:
                         logger.debug("Traffic flows v2 endpoint returned 405 - not available")
-                        return []
+                        raise TrafficFlowsUnavailable("HTTP 405")
                     if resp.status != 200:
                         resp_text = await resp.text()
                         logger.error(f"Failed to get traffic flows: HTTP {resp.status}")
                         logger.debug(f"Traffic flows error response: {resp_text[:500] if resp_text else 'empty'}")
-                        return []
+                        raise TrafficFlowsUnavailable(f"HTTP {resp.status}")
 
                     data = await resp.json()
                     flows = data.get('data', [])
@@ -1039,9 +1052,11 @@ class UniFiClient:
             normalized_events = [self._normalize_v2_event(e) for e in all_events]
             return normalized_events
 
+        except TrafficFlowsUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Failed to get traffic flows (legacy): {e}")
-            return []
+            raise TrafficFlowsUnavailable(str(e))
 
     async def get_ips_events(
         self,
@@ -1066,16 +1081,19 @@ class UniFiClient:
         if not self._session:
             raise RuntimeError("Not connected to UniFi controller. Call connect() first.")
 
-        # Try the v2 traffic-flows API first (Network 10.x)
-        v2_events = await self.get_traffic_flows(
-            timestamp_from=start,
-            timestamp_to=end,
-            max_events=min(limit, 1000)
-        )
-        if v2_events:
+        # Try the v2 traffic-flows API first (Network 10.x). An empty answer
+        # is a real answer: falling back on it hit the removed stat/ips/event
+        # endpoint and logged a 404 on every quiet poll (#140).
+        try:
+            v2_events = await self.get_traffic_flows(
+                timestamp_from=start,
+                timestamp_to=end,
+                max_events=min(limit, 1000)
+            )
             logger.info(f"Using v2 traffic-flows API - got {len(v2_events)} IPS events")
             return v2_events
-        logger.debug("v2 traffic-flows returned no events, trying legacy endpoint")
+        except TrafficFlowsUnavailable as e:
+            logger.debug(f"v2 traffic-flows unavailable ({e}), trying legacy endpoint")
 
         # Fall back to legacy stat/ips/event endpoint
         try:

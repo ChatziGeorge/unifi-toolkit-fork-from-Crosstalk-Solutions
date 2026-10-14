@@ -981,3 +981,40 @@ class TestVlanId:
         ]
         m = P.build_isolation_matrix(nets, [])
         assert [r["vlan"] for r in m["rows"]] == [2, 3, None]
+
+
+# --- DHCP DNS read gated on dhcpd_dns_enabled (#136) ------------------------
+
+STALE_NET = {
+    "_id": "n1", "name": "IoT", "dhcpd_dns_enabled": False,
+    "dhcpd_dns_1": "192.168.1.53", "dhcpd_dns_2": "192.168.1.54",
+}
+
+
+def test_dhcp_dns_of_ignores_fields_left_behind_by_a_disabled_override():
+    assert P.dhcp_dns_of(STALE_NET) == []
+
+
+def test_dhcp_dns_of_reads_an_enabled_override():
+    net = dict(STALE_NET, dhcpd_dns_enabled=True)
+    assert P.dhcp_dns_of(net) == ["192.168.1.53", "192.168.1.54"]
+
+
+def test_dhcp_dns_conflicts_skips_a_network_handing_out_the_gateway():
+    assert P.dhcp_dns_conflicts([STALE_NET], ["192.168.1.2"]) == []
+
+
+# --- Resolver IP validation (#138) ------------------------------------------
+
+def test_space_separated_resolvers_are_refused():
+    with pytest.raises(ValueError, match="not an IP address"):
+        P.check_resolver_ips(["192.168.1.2 192.168.1.3"])
+
+
+def test_valid_resolvers_pass():
+    P.check_resolver_ips(["192.168.1.2", " 1.1.1.1 "])
+
+
+def test_dhcp_dns_payload_refuses_a_bad_entry():
+    with pytest.raises(ValueError, match="not an IP address"):
+        P.dhcp_dns_payload(["192.168.1.2 192.168.1.3"])

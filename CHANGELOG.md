@@ -2,6 +2,14 @@
 
 All notable changes to UI Toolkit will be documented in this file.
 
+## [1.13.3] - 2026-10-14
+
+### Fixed
+- **House Arrest no longer shows old DNS servers as current (#136).** When you turn off a network's DNS override in UniFi, the old addresses stay saved in the background and DHCP goes back to handing out the gateway. House Arrest read those leftovers as if they were still in use, in the Networks table, the DHCP preview and the DNS Lockdown warnings. It now checks whether the override is on first. Thanks to @trobbelke for the report and @Sub-lime-time for finding the cause.
+- **DNS Lockdown refuses resolver lists it can't read (#138).** Approved DNS servers separated by spaces instead of commas arrived as one long entry, which the preview treated as an internet resolver and wrote a useless allow rule for. Spaces and commas both work now, and anything that isn't an IP address is refused with a message naming it, on DNS Lockdown and on the DHCP name server step. Thanks to @Sub-lime-time.
+- **Threat Watch recognises the UDM Beast (#139).** Its model code (`UDMEA4C`) was missing from the IDS/IPS-capable list, so Threat Watch said the gateway didn't support IPS. Thanks to @reentier.
+- **Threat Watch no longer logs an HTTP 404 every minute (#140).** When the console answered "no new threat events", Threat Watch treated that as a failure and tried an older endpoint that newer firmware has removed. An empty answer is now taken as an answer, and the older endpoint is only tried when the request itself fails. Thanks to @reentier.
+
 ## [1.13.2] - 2026-10-13
 
 ### Fixed

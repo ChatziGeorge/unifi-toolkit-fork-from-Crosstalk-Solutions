@@ -966,6 +966,10 @@ async def dns_lockdown(req: DnsLockdownRequest):
         raise HTTPException(status_code=400, detail="Select at least one network")
     if not req.resolver_ips:
         raise HTTPException(status_code=400, detail="Add at least one approved resolver")
+    try:
+        P.check_resolver_ips(req.resolver_ips)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         zones = await client.get_firewall_zones()

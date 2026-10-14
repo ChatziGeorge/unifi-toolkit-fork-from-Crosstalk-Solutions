@@ -152,7 +152,7 @@ function houseArrest() {
 
         dnsResolverList() {
             return (this.dnsResolvers || '')
-                .split(',').map(x => x.trim()).filter(Boolean);
+                .split(/[\s,]+/).filter(Boolean);
         },
 
         async dnsDryRun() {
