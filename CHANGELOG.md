@@ -2,6 +2,24 @@
 
 All notable changes to UI Toolkit will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **House Arrest: DNS status by network.** The DNS Lockdown tab now reads every firewall rule on the console, your own, UniFi's built-in ones and House Arrest's, in the order the gateway runs them, and shows per network whether DNS, DNS-over-TLS and DNS-over-HTTPS are blocked and by which rule. Rules built by hand in the UniFi UI, with port and address groups, are recognised, so a network you already locked down no longer shows as open. Suggested fixes appear only for real gaps, in a per-network or per-zone style (each with its pros and cons), are re-checked against the console before applying, and are verified afterwards. Networks you want left alone can be excluded from suggestions.
+- **House Arrest: Rule check tab.** A read-only check of your own firewall rules: rules that match nothing (empty or deleted groups), rules an earlier rule already decides (never takes effect, redundant or duplicate), IPv4-only blocks, blocks that exist for some zones but not others, disabled rules, rules with no hits, and groups no rule uses.
+- **House Arrest: Wi-Fi client isolation column.** The Networks table shows client isolation per network, worked out from the SSIDs that put devices on it, including SSIDs that use a different network per password.
+- **Setup: "LAN with login" option.** A third choice in `setup.sh` for a password-protected install that stays on your LAN: HTTPS through Caddy with a self-signed certificate (`Caddyfile.lan`), no public domain or open ports needed.
+
+### Changed
+- **House Arrest: network isolation is read from the rules, not only the setting.** A network kept apart by its zone or by your own inter-VLAN rule shows "Isolated", "Isolated by zone" or "Partial" instead of "Off", and the hover lists which networks can reach it, which it can reach, and the rules that keep it apart.
+- **House Arrest: clearer colours and wording.** Internet access is green when allowed and red when blocked; Wi-Fi client isolation "Off" is grey, a normal setting rather than a fault; a colour key and a "What does a network scanner see?" explanation sit under the table. Each SSID shows which network it puts devices on.
+- **House Arrest: Release on the DNS tab asks for confirmation,** and the list of rules House Arrest applied sits directly under the status table.
+
+### Fixed
+- **House Arrest no longer treats the gateway's own address as a DNS server on the network.** A network whose DHCP DNS was set explicitly to its gateway (for example 192.168.1.1) was flagged "no firewall rule can filter this", DNS Lockdown warned that devices would lose DNS, and Internet only with the neighbour block refused to apply, waiting for a "DNS server" no device owns. DNS to the gateway goes through the Gateway zone, where firewall rules apply, so it now counts as the gateway.
+- **House Arrest: two SSIDs with the same name no longer share one client count.** A disabled SSID now shows 0 clients instead of its namesake's.
+- **`setup.sh` and `reset_password.sh` run on macOS.** No Python packages are needed any more: the encryption key uses the standard library or `openssl`, and the password hash falls back to `htpasswd`, which ships with macOS. Errors are printed instead of the script stopping silently, `data/` is no longer handed to UID 1000 on macOS (Docker Desktop and OrbStack write bind mounts as the Mac user, so that locked the container out), and `sed -i` works with BSD sed.
+
 ## [1.13.3] - 2026-10-14
 
 ### Fixed

@@ -76,7 +76,9 @@ services:
     environment:
       - DOMAIN=${DOMAIN:-localhost}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # CADDYFILE=Caddyfile.lan (set by setup.sh "LAN with login") swaps in a
+      # self-signed-certificate config for LAN-only deployments
+      - ./${CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

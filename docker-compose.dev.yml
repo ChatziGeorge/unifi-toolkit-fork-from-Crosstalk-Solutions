@@ -1,0 +1,23 @@
+# Development instance, side by side with a normal install (which keeps
+# port 8000 and the container name "unifi-toolkit").
+#
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   docker compose -f docker-compose.dev.yml restart   # after a Python change
+#
+# The source tree is mounted over /app, so template/JS/CSS changes show on a
+# browser refresh and Python changes need only a restart, not a rebuild.
+services:
+  unifi-toolkit-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: unifi-toolkit:dev
+    container_name: unifi-toolkit-dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - APP_PORT=8000
+    volumes:
+      - ./:/app
+    ports:
+      - "8001:8000"

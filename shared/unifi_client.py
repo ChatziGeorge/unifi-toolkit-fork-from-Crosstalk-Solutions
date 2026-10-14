@@ -2404,6 +2404,31 @@ class UniFiClient:
             logger.error(f"Error reading content filters: {e}")
             return []
 
+    async def get_firewall_groups(self) -> Optional[List[Dict]]:
+        """
+        Port and address objects (legacy `rest/firewallgroup`).
+
+        MEASURED 2026-10-14: zone-based policies that use a port or address
+        object reference it as `port_group_id` / `ip_group_id`, and those ids
+        are this collection's `_id`s (`group_type` port-group / address-group,
+        `group_members` as strings). No v2 route for them was found.
+
+        Returns None on failure: unknown members must not read as "no match".
+        """
+        if not self._session:
+            raise RuntimeError("Not connected to UniFi controller. Call connect() first.")
+        url = f"{self.host}/proxy/network/api/s/{self.site}/rest/firewallgroup"
+        try:
+            async with self._session.get(url) as resp:
+                if resp.status != 200:
+                    logger.error(f"Failed to get firewall groups: {resp.status}")
+                    return None
+                data = await resp.json()
+                return data.get("data", []) if isinstance(data, dict) else data
+        except Exception as e:
+            logger.error(f"Error reading firewall groups: {e}")
+            return None
+
     async def get_site_setting(self, key: str) -> Optional[Dict]:
         """
         One entry from the site settings collection, e.g. 'mdns' or 'usg'.

@@ -20,6 +20,24 @@ function houseArrest() {
         dnsCaveats: [],
         dnsPreviewing: false,
         dnsApplying: false,
+        // DNS status by network (api/dns-audit). Every policy counts, not
+        // only House Arrest's, so hand-built rules are recognised.
+        audit: null,
+        auditLoading: false,
+        auditStyle: 'network',
+        auditPicked: [],
+        auditPreview: null,
+        auditPreviewing: false,
+        auditApplying: false,
+        auditChannelKeys: ['dns_internet', 'dot_internet', 'doh', 'dns_lan'],
+        // Networks the user never wants DNS suggestions for (kept in this
+        // browser). And which DNS lockdown's Release is waiting for a confirm.
+        auditIgnored: [],
+        releaseArmed: null,
+        // Rule check tab (api/rule-check), loaded when the tab is opened.
+        ruleCheck: null,
+        ruleLoading: false,
+        ruleFilter: 'problems',
         loading: true,
         previewing: false,
         applying: false,
@@ -76,6 +94,12 @@ function houseArrest() {
                 if (saved) this.tab = saved;
             } catch (e) { /* private mode */ }
 
+            try {
+                const st = localStorage.getItem('house-arrest-dns-style');
+                if (st) this.auditStyle = st;
+                this.auditIgnored = JSON.parse(localStorage.getItem('house-arrest-dns-ignored') || '[]');
+            } catch (e) { /* private mode */ }
+
             this.presets = this.readJson('ha-presets', []);
             this.pathLabels = this.readJson('ha-path-labels', {});
             this.networkPresets = this.readJson('ha-network-presets', []);
@@ -83,9 +107,11 @@ function houseArrest() {
             if (this.presets.length) this.preset = this.presets[0].value;
 
             await this.refresh();
+            if (this.tab === 'rules') this.loadRuleCheck();
             this.loadNetworks();
             this.loadWlans();
             this.loadInspection();
+            this.loadAudit();
             setInterval(() => this.refresh(true), 60000);
         },
 
@@ -318,6 +344,144 @@ function houseArrest() {
             await this.refresh();
             await this.loadInspection();
             await this.loadNetworks();
+            await this.loadAudit();
+        },
+
+        // ---- DNS status by network ----
+
+        async loadAudit() {
+            this.auditLoading = true;
+            try {
+                const res = await fetch('api/dns-audit?ignore=' + encodeURIComponent(this.auditIgnored.join(',')));
+                const data = await res.json();
+                this.audit = data.connected === false ? { error: data.error, rows: [] } : data;
+                // Drop picks that no longer exist (the gap was closed meanwhile).
+                const ids = (this.audit.suggestions || []).map(s => s.id);
+                this.auditPicked = this.auditPicked.filter(id => ids.includes(id));
+                this.auditPreview = null;
+            } catch (e) {
+                this.audit = { error: String(e), rows: [] };
+            } finally {
+                // Explicit false: Alpine keeps :disabled on undefined.
+                this.auditLoading = false;
+            }
+        },
+
+        auditChannelLabel(key) {
+            const row = this.audit && this.audit.rows && this.audit.rows[0];
+            const ch = row && row.channels.find(c => c.key === key);
+            return ch ? ch.label : key;
+        },
+
+        auditCell(row, key) {
+            return row.channels.find(c => c.key === key)
+                || { state: 'neutral', label: key, value: '—', detail: '' };
+        },
+
+        auditSuggestions() {
+            return ((this.audit && this.audit.suggestions) || [])
+                .filter(s => s.style === this.auditStyle);
+        },
+
+        async loadRuleCheck() {
+            this.ruleLoading = true;
+            try {
+                const res = await fetch('api/rule-check');
+                const data = await res.json();
+                this.ruleCheck = data.connected === false ? { error: data.error } : data;
+            } catch (e) {
+                this.ruleCheck = { error: String(e) };
+            } finally {
+                this.ruleLoading = false;
+            }
+        },
+
+        ruleRows() {
+            const rows = (this.ruleCheck && this.ruleCheck.rows) || [];
+            return this.ruleFilter === 'all'
+                ? rows
+                : rows.filter(r => r.status === 'issue' || r.status === 'improve' || r.status === 'info');
+        },
+
+        ruleStatusLabel(s) {
+            return { issue: 'Issue', improve: 'Can improve', info: 'Note', ok: 'OK' }[s] || s;
+        },
+
+        auditNetName(id) {
+            const r = ((this.audit && this.audit.rows) || []).find(x => x.id === id);
+            return r ? r.name.trim() : 'a removed network';
+        },
+
+        auditHiddenCount() {
+            return this.auditIgnored.length;
+        },
+
+        saveIgnored() {
+            try { localStorage.setItem('house-arrest-dns-ignored', JSON.stringify(this.auditIgnored)); } catch (e) { /* private mode */ }
+        },
+
+        async auditIgnore(id) {
+            if (!this.auditIgnored.includes(id)) this.auditIgnored.push(id);
+            this.saveIgnored();
+            await this.loadAudit();
+        },
+
+        async auditUnignoreAll() {
+            this.auditIgnored = [];
+            this.saveIgnored();
+            await this.loadAudit();
+        },
+
+        auditStyleChanged() {
+            try { localStorage.setItem('house-arrest-dns-style', this.auditStyle); } catch (e) { /* private mode */ }
+            // A pick belongs to one style; switching style starts over.
+            this.auditPicked = [];
+            this.auditPreview = null;
+        },
+
+        async auditPost(dryRun) {
+            const res = await fetch('api/dns-audit/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ suggestion_ids: this.auditPicked,
+                                       ignored_network_ids: this.auditIgnored,
+                                       dry_run: dryRun })
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) throw new Error(data.detail || data.error || 'Request failed');
+            return data;
+        },
+
+        async auditDryRun() {
+            this.message = null;
+            this.auditPreviewing = true;
+            try {
+                this.auditPreview = (await this.auditPost(true)).plan;
+            } catch (e) {
+                this.message = { kind: 'danger', text: e.message };
+            } finally {
+                this.auditPreviewing = false;
+            }
+        },
+
+        async auditApply() {
+            if (!this.auditPreview) return;
+            this.auditApplying = true;
+            this.message = null;
+            try {
+                const data = await this.auditPost(false);
+                const notices = data.notices || [];
+                this.message = notices.length
+                    ? { kind: 'warn', text: data.created.length + ' rules created, but not everything is closed: ' + notices.join(' ') }
+                    : { kind: 'ok', text: data.created.length + ' rules created and verified on the console.' };
+                this.auditPicked = [];
+                await this.refresh(true);
+                await this.loadAudit();
+            } catch (e) {
+                this.message = { kind: 'danger', text: e.message };
+            } finally {
+                this.auditApplying = false;
+            }
         },
 
         async refresh(quiet = false) {

@@ -1848,6 +1848,92 @@ network delete is the guess) is unconfirmed.
 
 ---
 
+## MEASURED 2026-10-14: a second console, and reading every rule
+
+All read-only (GET, plus one `traffic-flows` query), on a contributor's
+console (Network 9.x). Shapes below are what the API returned.
+
+**The gateway's own address as DHCP DNS** [Measured]. Setting a network's
+DHCP DNS explicitly to its gateway stores that address in `dhcpd_dns_1`
+(e.g. `ip_subnet` 10.0.3.1/27, `dhcpd_dns_1` 10.0.3.1). It sits inside the
+subnet, so `_ip_in_subnet()` treated it as a same-subnet resolver. Running
+the 0.15.13 code on this console's real network documents gave, on 5
+networks: the matrix "no firewall rule can filter this" warning,
+`dhcp_dns_conflicts()` "devices will lose DNS" for any non-gateway approved
+resolver, and `same_network_resolvers()` returning the gateway as a
+"missing" resolver, which made Internet only + neighbour block refuse to
+apply. Fixed with `gateway_ips()` (the host part of every LAN's
+`ip_subnet`). DNS to it goes to the Gateway zone, which these rules never
+block.
+
+**One ordered list, custom and predefined** [Read]. Per zone pair, custom
+policies sit at 10000+, predefined ones at 30000+ (`Isolated Networks`,
+`Block Invalid Traffic`, `Allow Return Traffic`, `(Return)` companions), and
+the pair default (`Allow All Traffic` / `Block All Traffic`) at 2147483647.
+A network's internet toggle appears as a predefined policy too: `Block
+<subnet> Internet Access`, `origin_type: network_config`, `ip_version: IPV4`.
+So walking all policies by index models isolation, the internet toggle and
+the default without special cases (`dns_audit.py`, `reach.py`).
+
+**Connection-state shapes** [Read]: `(Return)` and `Allow Return Traffic`
+are `RESPOND_ONLY` with `[RELATED, ESTABLISHED]`; `Block Invalid Traffic` is
+`CUSTOM [INVALID]`; `Isolated Networks` is `ALL`, except in the Internal ->
+Vpn pair where it is `CUSTOM [NEW, INVALID]`. Neither of the first two can
+match a NEW connection. Reply handling in `reach.py` follows the 2026-10-08
+measurement above (isolation blocks the reply; a `(Return)` ahead of the
+block lets it through); nothing new was measured about replies here.
+
+**Port and address objects** [Read]. A policy side using an object carries
+`port_matching_type: OBJECT` + `port_group_id`, or `matching_target_type:
+OBJECT` + `ip_group_id`. Both ids resolve through legacy
+`rest/firewallgroup` (`group_type` port-group / address-group,
+`group_members` as strings, ports may be `a-b` ranges); the ids are UUIDs.
+No v2 route found: `v2/.../firewall-groups`, `firewall/groups`,
+`port-lists`, `traffic-matching-lists`, `firewall-policies/port-groups` all
+404. `get_firewall_groups()` returns None on failure, never [].
+
+**Application rules** [Read]. `matching_target: APP` + `app_ids` (integers),
+`APP_CATEGORY` for categories. No endpoint returning app names was found
+(404 or empty: `v2/.../dpi/apps`, `firewall/apps`, `app-catalog`,
+`applications`, `firewall-app-groups`, `app-groups`; legacy `stat/dpi`,
+`rest/dpiapp`, `rest/dpigroup` returned empty). The UI shows names, so they
+come from somewhere; watch the UI to find it. Until then an app rule is
+reported as "check in UniFi", never as "DoH is blocked".
+
+**IPv6 per network** [Read]. Every LAN document carries
+`ipv6_interface_type`, `"none"` when IPv6 is off for that network, even
+while the WAN has DHCPv6 and a delegated prefix. With it off, an IPv4-only
+block is complete for that network. A missing field is treated as IPv6 on.
+
+**Per-password SSIDs** [Read]. A WLAN with `private_preshared_keys_enabled:
+true` puts devices on the network named in each
+`private_preshared_keys[].networkconf_id`; its own `networkconf_id` names only
+one of them. `wlan_networks()` reads both.
+
+**Hotspot built-ins** [Read]. `Allow Public DNS` (ALLOW, port 53, tcp_udp,
+IPV4, destination Any, index 30000) exists in EVERY Hotspot pair: External,
+Internal, Dmz, Vpn and Hotspot. `Allow Hotspot Portal` (443) to External.
+`Post-Authorization Restrictions` (BLOCK, destination Any, IPV4) at 30000 to
+30002 in the Hotspot pairs, External included, ahead of `Allow All Traffic`;
+how authorised guests then reach the internet was not determined (guest SSID
+disabled at the time). Internal -> Hotspot's default is `Allow All Traffic`,
+with `Isolated Networks` blocking only the isolated Internal subnets. A user
+BLOCK at 10000 in a Hotspot pair runs before `Allow Public DNS`.
+
+**Other fields seen** [Read]: policies carry `hits`, `last_hit` (ms) and
+`report_flow`; `hits` is absent on some rules, so a missing count is not
+"never matched". A source `matching_target: USER_IDENTITY` exists (VPN user
+rules). `traffic-flows` `policies[]` can name `internal_type: CONNTRACK` and
+`AD_BLOCKING` (Content Filtering) as the blocker.
+
+**Built on this** (House Arrest 0.16.0): `dns_audit.py` (DNS status by
+network, gap suggestions in two styles), `reach.py` (rule-derived isolation
+for the Networks matrix, "Kept apart by"), `rule_check.py` (Rule check tab).
+Every verdict is worked out from the rule list, not from traffic, and says
+so.
+
+---
+
 ## DEFERRED 2026-10-09: "cast target" device profiles (research, nothing built)
 
 **Goal (Chris):** tag a locked-down device as Roku / LG TV / Apple TV / Google

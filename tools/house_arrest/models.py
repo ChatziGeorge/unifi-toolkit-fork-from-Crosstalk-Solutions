@@ -170,6 +170,15 @@ class DnsLockdownRequest(BaseModel):
     dry_run: bool = True
 
 
+class DnsAuditApplyRequest(BaseModel):
+    """Apply chosen gap-filling suggestions from the DNS audit."""
+    suggestion_ids: List[str] = Field(default_factory=list)
+    # Networks the user excluded; must match what the page was showing, or
+    # the suggestion ids would not line up.
+    ignored_network_ids: List[str] = Field(default_factory=list)
+    dry_run: bool = True
+
+
 class DnsLockdownResponse(BaseModel):
     dry_run: bool
     created: List[Dict] = Field(default_factory=list)
@@ -199,6 +208,9 @@ class DnsLockdownEntry(BaseModel):
     # rules protect nothing and only need releasing. Seen 2026-10-08: the
     # controller emptied the rules' network list and turned them off.
     network_missing: bool = False
+    # Rules with source "every device in the zone" (the audit's zone style)
+    # carry no network list, so an empty list is not a deleted network.
+    zone_wide: bool = False
 
 
 class StateResponse(BaseModel):
@@ -383,6 +395,10 @@ class WlanInfo(BaseModel):
     isolated: bool = False
     client_count: int = 0
     network_id: Optional[str] = None
+    # Which network the SSID puts its devices on. Two SSIDs can share a name
+    # (seen 2026-10-14: one name on two networks), so the name alone is not
+    # enough to tell rows apart.
+    network_name: Optional[str] = None
 
 
 class WlanIsolationRequest(BaseModel):

@@ -120,7 +120,93 @@
                 <span class="tool-sub">Per-device lockdown settings</span>
             </span>
         </button>
+        <button role="tab" class="tool-tab" :class="{ 'is-active': tab === 'rules' }"
+                :aria-selected="tab === 'rules'" @click="setTab('rules'); if (!ruleCheck) loadRuleCheck()">
+            <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 11l3 3 8-8" />
+                    <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" />
+                </svg>
+            </span>
+            <span class="tool-text">
+                <span class="tool-name">Rule check</span>
+                <span class="tool-sub">Is each firewall rule doing its job?</span>
+            </span>
+        </button>
     </nav>
+
+    <!-- ============ Rule check ============
+         Read-only. Every custom rule, checked against the others in its
+         zone pair: does it match anything, does an earlier rule already
+         decide it, is it IPv4 only, does it match its siblings in other
+         zones. Nothing here writes to the controller. -->
+    <section class="card" x-show="tab === 'rules'" role="tabpanel">
+        <div class="card-head">
+            <h2>Rule check</h2>
+            <button class="btn btn-secondary btn-sm" @click="loadRuleCheck()"
+                    :disabled="ruleLoading === true">
+                <span x-text="ruleLoading ? 'Checking…' : 'Check again'"></span>
+            </button>
+        </div>
+        <p class="card-note">
+            A quick look at each of your own firewall rules: is it OK, can it be
+            improved, does it clash with another rule? Nothing here changes
+            anything; make changes in UniFi.
+        </p>
+        <template x-if="ruleCheck && ruleCheck.error">
+            <div class="notice danger" x-text="'Couldn\'t run the rule check: ' + ruleCheck.error"></div>
+        </template>
+        <template x-if="ruleCheck && ruleCheck.counts">
+            <div>
+                <div class="rule-filter" role="group" aria-label="Show">
+                    <template x-for="f in [['problems', 'Issues and improvements'], ['all', 'All rules']]" :key="f[0]">
+                        <button class="btn btn-sm" :class="ruleFilter === f[0] ? 'btn-primary' : 'btn-secondary'"
+                                @click="ruleFilter = f[0]" x-text="f[1]"></button>
+                    </template>
+                    <span class="muted small" x-text="ruleCheck.counts.issue + ' issues · ' + ruleCheck.counts.improve + ' can be improved · ' + ruleCheck.counts.info + ' notes · ' + ruleCheck.counts.ok + ' OK'"></span>
+                </div>
+                <div class="matrix-wrap">
+                    <table class="rule-table">
+                        <thead>
+                            <tr><th>Zones</th><th>#</th><th>Rule</th><th>Status</th><th>Findings</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="r in ruleRows()" :key="r.id">
+                                <tr :class="{ 'is-off': !r.enabled }">
+                                    <td class="muted small" x-text="r.pair"></td>
+                                    <td class="muted small" x-text="r.index"></td>
+                                    <td>
+                                        <span x-text="r.name"></span>
+                                        <span class="vlan-chip" x-show="r.ours">House Arrest</span>
+                                    </td>
+                                    <td><span class="rule-status" :class="'is-' + r.status" x-text="ruleStatusLabel(r.status)"></span></td>
+                                    <td>
+                                        <template x-for="(f, i) in r.findings" :key="i">
+                                            <div class="rule-finding" :class="'is-' + f.severity" x-text="f.text"></div>
+                                        </template>
+                                        <span class="muted small" x-show="!r.findings.length">Nothing found.</span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <template x-if="ruleCheck.unused_groups && ruleCheck.unused_groups.length">
+                    <div class="subsection">
+                        <h3>Groups no rule uses</h3>
+                        <p class="hint">Port and address groups that no firewall rule refers to.
+                            Either a rule was never made for them, or they're left over.</p>
+                        <ul class="caveats">
+                            <template x-for="g in ruleCheck.unused_groups" :key="g.name">
+                                <li x-text="g.name + ' (' + (g.type === 'port-group' ? 'ports' : 'addresses') + ': ' + g.members.join(', ') + ')'"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </template>
+            </div>
+        </template>
+    </section>
 
     <!-- ============ 3. Inspection ============
          Runs automatically. It used to sit behind a button that did nothing
@@ -193,6 +279,24 @@
                     </template>
                 </tbody>
             </table>
+            <p class="hint matrix-key">
+                <span class="key is-good">Green</span> on, isolated or allowed ·
+                <span class="key is-warn">Amber</span> partly: exceptions, mixed settings or limited coverage ·
+                <span class="key is-bad">Red</span> blocked ·
+                <span class="key is-neutral">Grey</span> off or not applicable, a choice rather than a fault
+                · <span class="help-tip" tabindex="0" aria-label="What does a network scanner see?">What does a network scanner see?
+                        <span class="tip" role="tooltip">
+                            <strong>What does a network scanner see?</strong>
+                            <span>A scanner on one device finds the devices on its
+                            own network, unless client isolation (Wi-Fi) or Device
+                            isolation (wired) stops it. It finds devices on your
+                            other networks only where Network isolation and your
+                            firewall rules let it through. An SSID that puts devices
+                            on different networks by password keeps those networks
+                            apart either way.</span>
+                        </span>
+                    </span>
+            </p>
             <p class="hint">
                 Hover over or focus any cell to see what that setting means for
                 that network. Cells marked
@@ -306,11 +410,33 @@
                  traffic, and it is a property of the SSID rather than of any
                  one device. -->
             <div class="subsection wifi-isolation is-first">
-                <h3>Wi-Fi client isolation</h3>
+                <h3>Wi-Fi client isolation
+                    <span class="help-tip" tabindex="0" aria-label="What does a network scanner see?">?
+                        <span class="tip" role="tooltip">
+                            <strong>What does a network scanner see?</strong>
+                            <span>A scanner on one device finds the devices on its
+                            own network, unless client isolation (Wi-Fi) or Device
+                            isolation (wired) stops it. It finds devices on your
+                            other networks only where Network isolation and your
+                            firewall rules let it through. An SSID that puts devices
+                            on different networks by password keeps those networks
+                            apart either way.</span>
+                        </span>
+                    </span>
+                </h3>
                 <p class="card-note">
-                    Stops wireless devices on the same SSID from reaching each
-                    other. Wired devices aren't affected; use Device isolation in
-                    the table above for those.
+                    Client isolation stops Wi-Fi devices on the <em>same network</em>
+                    from seeing each other. That traffic goes straight between them
+                    and never reaches the gateway, so no firewall rule can stop it.
+                </p>
+                <p class="card-note">
+                    What a network scanner on one device finds:
+                    <strong>its own network's devices</strong> unless client
+                    isolation (Wi-Fi) or Device isolation (wired) stops it;
+                    <strong>other networks' devices</strong> only where Network
+                    isolation and your firewall rules let it through. An SSID that
+                    puts devices on different networks by password keeps those
+                    networks apart either way.
                 </p>
 
                 <p class="hint" x-show="wlansLoading">Reading SSIDs…</p>
@@ -322,14 +448,14 @@
                     <table class="matrix wlan-matrix">
                         <thead>
                             <tr>
-                                <th class="net-col">Wi-Fi network</th>
+                                <th class="net-col">Wi-Fi network (SSID)</th>
                                 <th>
                                     <span class="col-label">Clients</span>
                                     <span class="col-help">Wireless devices on this SSID right now.</span>
                                 </th>
                                 <th>
                                     <span class="col-label">Client isolation</span>
-                                    <span class="col-help">Stops devices on this SSID reaching each other.</span>
+                                    <span class="col-help">Can devices on this SSID talk to each other directly?</span>
                                 </th>
                             </tr>
                         </thead>
@@ -338,7 +464,8 @@
                                 <tr :class="{ 'is-off': !w.enabled }">
                                     <th class="net-col" scope="row">
                                         <span x-text="w.name"></span>
-                                        <span class="vlan-tag" x-show="!w.enabled">disabled</span>
+                                        <span class="vlan-tag"
+                                              x-text="(w.network_name ? 'on ' + w.network_name + (w.network_name.includes(',') ? ' (by password)' : ' network') : 'network unknown') + (w.enabled ? '' : ' · disabled')"></span>
                                     </th>
                                     <td class="cell is-neutral">
                                         <span class="cell-label" x-text="w.client_count"></span>
@@ -348,19 +475,19 @@
                                         </span>
                                     </td>
                                     <td class="cell is-editable"
-                                        :class="w.isolated ? 'is-good' : 'is-warn'"
+                                        :class="!w.enabled ? 'is-neutral' : (w.isolated ? 'is-good' : 'is-neutral')"
                                         tabindex="0" role="button"
                                         @click="openWlanToggle(w)"
                                         @keydown.enter.prevent="openWlanToggle(w)"
                                         @keydown.space.prevent="openWlanToggle(w)"
                                         :aria-label="w.name + ' — Client isolation: ' + (w.isolated ? 'On' : 'Off') + '. Activate to change this setting.'">
-                                        <span class="cell-label" x-text="w.isolated ? 'On' : 'Off'"></span>
+                                        <span class="cell-label" x-text="(w.isolated ? 'On' : 'Off') + (w.enabled ? '' : ' · SSID off')"></span>
                                         <span class="cell-edit" aria-hidden="true">✎</span>
                                         <span class="tip" role="tooltip">
                                             <strong x-text="w.name + ' · Client isolation'"></strong>
                                             <span x-text="w.isolated
-                                                ? 'Devices on this SSID cannot reach each other. Wired devices are not affected.'
-                                                : 'Devices on this SSID can reach, discover and profile each other.'"></span>
+                                                ? 'On. Wi-Fi devices that joined ' + w.name + ' can\'t see or talk to other devices on their own network directly: no casting, AirPlay or printing between them, and a network scanner finds nothing. Internet and whatever your firewall allows still work. Wired devices are not affected.'
+                                                : 'Off. Wi-Fi devices that joined ' + w.name + ' can see and talk to other devices on their own network directly (casting, printing, a network scanner finds them). Normal for a home network. Devices on a different network are kept apart by Network isolation and your firewall rules, not by this setting.'"></span>
                                             <span class="tip-cta">Click to change</span>
                                         </span>
                                     </td>
@@ -396,10 +523,9 @@
             <h2>DNS Lockdown</h2>
         </div>
         <p class="card-note">
-            Devices on the networks you choose can use only your approved DNS
-            servers. Every other DNS server is blocked.
-            <strong class="warn-inline">WARNING:</strong> DNS Lockdown will break
-            any device with a hardcoded DNS server.
+            See which DNS servers each network can really reach, and close the
+            gaps. Blocking DNS breaks any device with a hardcoded DNS server,
+            so review before you apply.
         </p>
 
         <!-- The gateway itself can be in the resolution path (CyberSecure).
@@ -417,31 +543,230 @@
             </div>
         </template>
 
-        <template x-if="state.dns_lockdowns && state.dns_lockdowns.length">
-            <div style="margin-bottom:1.5rem">
-                <template x-for="l in state.dns_lockdowns" :key="l.label">
-                    <div class="arrest">
-                        <span class="arrest-id">
-                            <span class="arrest-name" x-text="l.label"></span>
-                            <span class="arrest-meta">
-                                <span x-text="'Approved DNS servers: ' + l.resolvers.join(', ')"></span>
-                                <template x-if="l.blocks_dot">
-                                    <span class="vlan-chip">DoT blocked</span>
-                                </template>
-                            </span>
-                        </span>
-                        <span class="state" :class="(l.disabled_count || l.network_missing) ? '' : 'ok'">
-                            <span class="dot"
-                                  :style="'background: var(--state-' + ((l.disabled_count || l.network_missing) ? 'broken' : 'enforcing') + ')'"></span>
-                            <span x-text="dnsStateText(l)"></span>
-                        </span>
-                        <span class="muted small" x-text="l.policy_ids.length + ' rules'"></span>
-                        <button class="btn btn-danger btn-sm" @click="dnsRelease(l.label)">Release</button>
-                    </div>
-                </template>
+        <!-- DNS status by network. Read from EVERY policy on the console (the
+             user's own, UniFi's built-in ones and House Arrest's), in
+             evaluation order, so rules built by hand in the UniFi UI count. -->
+        <div class="dns-audit">
+            <div class="dns-audit-head">
+                <h3>DNS status by network</h3>
+                <button class="btn btn-secondary btn-sm" @click="loadAudit()"
+                        :disabled="auditLoading === true">
+                    <span x-text="auditLoading ? 'Reading…' : 'Re-read'"></span>
+                </button>
             </div>
-        </template>
+            <p class="hint">
+                Which rule decides each network's DNS traffic, whether you wrote
+                it, UniFi did, or House Arrest did. Hover over a cell for the reason.
+            </p>
+            <template x-if="audit && audit.error">
+                <div class="notice danger" x-text="'Couldn\'t read the DNS status: ' + audit.error"></div>
+            </template>
+            <template x-if="audit && audit.groups_unreadable">
+                <div class="notice warn">
+                    House Arrest couldn't read your port and address groups, so rules
+                    that use them show as "Partial". Re-read to try again.
+                </div>
+            </template>
+            <div class="matrix-wrap" x-show="audit && audit.rows && audit.rows.length">
+                <table class="matrix dns-audit-table">
+                    <thead>
+                        <tr>
+                            <th class="net-col">Network</th>
+                            <th>DNS handed out</th>
+                            <template x-for="k in auditChannelKeys" :key="'h-' + k">
+                                <th x-text="auditChannelLabel(k)"></th>
+                            </template>
+                            <th>Overall</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="r in (audit ? audit.rows : [])" :key="'a-' + r.id">
+                            <tr>
+                                <th class="net-col" scope="row">
+                                    <span x-text="r.name"></span>
+                                    <span class="vlan-tag" x-text="r.zone_name + ' zone' + (r.vlan !== null ? ' · VLAN ' + r.vlan : '')"></span>
+                                </th>
+                                <td class="cell is-neutral" tabindex="0">
+                                    <span class="cell-label cell-label--list" x-text="r.resolver.label"></span>
+                                    <span class="tip" role="tooltip">
+                                        <strong x-text="r.name + ' · DNS handed out'"></strong>
+                                        <span x-text="r.resolver.detail + (r.gateway_notes.length ? ' ' + r.gateway_notes.join(' ') : '')"></span>
+                                    </span>
+                                </td>
+                                <template x-for="k in auditChannelKeys" :key="r.id + k">
+                                    <td class="cell" tabindex="0" :class="'is-' + auditCell(r, k).state"
+                                        :aria-label="r.name + ' — ' + auditCell(r, k).label + ': ' + auditCell(r, k).value + '. ' + auditCell(r, k).detail">
+                                        <span class="cell-label" x-text="auditCell(r, k).value"></span>
+                                        <span class="tip" role="tooltip">
+                                            <strong x-text="r.name + ' · ' + auditCell(r, k).label"></strong>
+                                            <span x-text="auditCell(r, k).detail"></span>
+                                        </span>
+                                    </td>
+                                </template>
+                                <td class="cell" tabindex="0" :class="'is-' + r.verdict.state">
+                                    <span class="cell-label" x-text="r.verdict.label"></span>
+                                    <span class="tip" role="tooltip">
+                                        <strong x-text="r.name"></strong>
+                                        <span x-text="r.verdict.detail"></span>
+                                    </span>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
 
+            <template x-if="state.dns_lockdowns && state.dns_lockdowns.length">
+                <div style="margin-bottom:1.5rem">
+                    <h3>Applied by House Arrest</h3>
+                    <p class="hint">
+                        Rules House Arrest added. Release removes them. The gap then
+                        shows up again under Suggested fixes, where you can apply it
+                        again.
+                    </p>
+                    <template x-for="l in state.dns_lockdowns" :key="l.label">
+                        <div class="arrest">
+                            <span class="arrest-id">
+                                <span class="arrest-name" x-text="l.label"></span>
+                                <span class="arrest-meta">
+                                    <span x-text="l.resolvers.length
+                                        ? 'Approved DNS servers: ' + l.resolvers.join(', ')
+                                        : (l.zone_wide ? 'Whole zone · ' : '') + 'Devices keep the DNS server DHCP hands out'"></span>
+                                    <template x-if="l.blocks_dot">
+                                        <span class="vlan-chip">DoT blocked</span>
+                                    </template>
+                                </span>
+                            </span>
+                            <span class="state" :class="(l.disabled_count || l.network_missing) ? '' : 'ok'">
+                                <span class="dot"
+                                      :style="'background: var(--state-' + ((l.disabled_count || l.network_missing) ? 'broken' : 'enforcing') + ')'"></span>
+                                <span x-text="dnsStateText(l)"></span>
+                            </span>
+                            <span class="muted small" x-text="l.policy_ids.length + ' rules'"></span>
+                            <template x-if="releaseArmed !== l.label">
+                                <button class="btn btn-danger btn-sm" @click="releaseArmed = l.label">Release</button>
+                            </template>
+                            <template x-if="releaseArmed === l.label">
+                                <span class="confirm-inline">
+                                    <span class="small" x-text="'Delete these ' + l.policy_ids.length + ' rules?'"></span>
+                                    <button class="btn btn-danger btn-sm" @click="releaseArmed = null; dnsRelease(l.label)">Yes, release</button>
+                                    <button class="btn btn-secondary btn-sm" @click="releaseArmed = null">Cancel</button>
+                                </span>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </template>
+
+            <!-- Suggestions: only for real gaps. Two styles, because people
+                 lay out zones differently; each states its trade-off. -->
+            <template x-if="audit && audit.rows && audit.rows.length && !(audit.suggestions || []).length">
+                <div class="notice ok">
+                    Nothing to fix: every network's DNS to the internet is already
+                    blocked by a rule, apart from the server DHCP hands out.
+                    <template x-if="auditHiddenCount()">
+                        <span>
+                            <span x-text="'(Not checking: ' + auditIgnored.map(id => auditNetName(id)).join(', ') + '.)'"></span>
+                            <a href="#" class="link-quiet" @click.prevent="auditUnignoreAll()">Show suggestions for them again</a>
+                        </span>
+                    </template>
+                </div>
+            </template>
+            <template x-if="audit && (audit.suggestions || []).length">
+                <div class="dns-suggest">
+                    <h3>Suggested fixes</h3>
+                    <p class="hint">
+                        Only gaps are listed. Rules you already have are left alone.
+                        Everything House Arrest adds can be released below like any
+                        DNS Lockdown.
+                    </p>
+                    <div class="style-pick" role="radiogroup" aria-label="Rule style">
+                        <template x-for="(st, key) in audit.styles" :key="'st-' + key">
+                            <label class="style-card" :class="{ 'is-chosen': auditStyle === key }">
+                                <input type="radio" name="audit-style" :value="key"
+                                       x-model="auditStyle" @change="auditStyleChanged()">
+                                <span class="style-title" x-text="st.label"></span>
+                                <ul class="pros">
+                                    <template x-for="(p, i) in st.pros" :key="i"><li x-text="p"></li></template>
+                                </ul>
+                                <ul class="cons">
+                                    <template x-for="(c, i) in st.cons" :key="i"><li x-text="c"></li></template>
+                                </ul>
+                            </label>
+                        </template>
+                    </div>
+                    <template x-for="s in auditSuggestions()" :key="s.id">
+                        <label class="suggestion" :class="{ 'is-picked': auditPicked.includes(s.id) }">
+                            <input type="checkbox" :value="s.id" x-model="auditPicked"
+                                   @change="auditPreview = null">
+                            <span class="suggestion-body">
+                                <span class="suggestion-title" x-text="s.title"></span>
+                                <template x-for="(w, i) in s.why" :key="i">
+                                    <span class="suggestion-why" x-text="w"></span>
+                                </template>
+                                <span class="suggestion-why" x-show="auditStyle === 'zone' && s.networks.length > s.fills.length"
+                                      x-text="'Also applies to ' + s.networks.filter(n => !s.fills.includes(n)).join(', ') + ', which are already covered.'"></span>
+                                <template x-for="(t, i) in s.improves" :key="'t' + i">
+                                    <span class="suggestion-tip" x-text="t"></span>
+                                </template>
+                                <span class="muted small">
+                                    <span x-text="s.policies.length + (s.policies.length === 1 ? ' rule' : ' rules')"></span>
+                                    <template x-for="nid in s.fill_ids" :key="s.id + nid">
+                                        <span> · <a href="#" class="link-quiet" @click.prevent.stop="auditIgnore(nid)"
+                                              x-text="'Don\'t suggest for ' + auditNetName(nid)"></a></span>
+                                    </template>
+                                </span>
+                            </span>
+                        </label>
+                    </template>
+                    <p class="hint" x-show="auditHiddenCount()">
+                        <span x-text="'Not suggesting for: ' + auditIgnored.map(id => auditNetName(id)).join(', ') + '.'"></span>
+                        <a href="#" class="link-quiet" @click.prevent="auditUnignoreAll()">Show them again</a>
+                    </p>
+                    <div class="actions">
+                        <button class="btn btn-secondary" @click="auditDryRun()"
+                                :disabled="!auditPicked.length || auditPreviewing">
+                            <span x-text="auditPreviewing ? 'Checking…' : 'Review changes'"></span>
+                        </button>
+                        <button class="btn btn-primary" @click="auditApply()"
+                                :disabled="!auditPreview || auditApplying">
+                            <span x-text="auditApplying ? 'Applying…' : 'Apply selected'"></span>
+                        </button>
+                    </div>
+                    <template x-if="auditPreview">
+                        <div class="preview">
+                            <template x-for="p in auditPreview" :key="p.id">
+                                <div>
+                                    <h4 x-text="p.title"></h4>
+                                    <ol class="preview-rules">
+                                        <template x-for="(pl, i) in p.payloads" :key="i">
+                                            <li>
+                                                <strong x-text="pl.action"></strong>
+                                                <span x-text="pl.name"></span>
+                                            </li>
+                                        </template>
+                                    </ol>
+                                </div>
+                            </template>
+                            <details>
+                                <summary class="muted small">Exact rules sent to UniFi</summary>
+                                <pre class="payload" x-text="JSON.stringify(auditPreview, null, 2)"></pre>
+                            </details>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
+
+
+        <details class="dns-manual">
+        <summary>Manual DNS Lockdown: pick networks and approved DNS servers yourself</summary>
+        <p class="card-note">
+            Devices on the networks you choose can use only your approved DNS
+            servers. Every other DNS server is blocked.
+            <strong class="warn-inline">WARNING:</strong> DNS Lockdown will break
+            any device with a hardcoded DNS server.
+        </p>
         <!-- Two columns: the form reads top-to-bottom on the left; the
              mechanism diagram and the what-is-handed-out-now table ride
              beside it instead of stacking the page twice as tall. -->
@@ -663,6 +988,7 @@
         </div>
         </aside>
         </div><!-- /dns-workbench -->
+        </details>
     </section>
 
     <!-- ============ 1. Lock down a device ============

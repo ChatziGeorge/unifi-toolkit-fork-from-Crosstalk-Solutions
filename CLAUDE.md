@@ -627,3 +627,20 @@ This is how we discovered the v2 `traffic-flows` filtered payload format (`polic
 - **UniFi's mDNS proxy filters by service type** (`v2/lan/mdns`, "Service
   Scope: Specific"). "mDNS on" in the matrix does not mean every service
   crosses.
+- **A network's DHCP DNS can be its own gateway address** (measured
+  2026-10-14). It sits inside the subnet but is NOT a same-subnet resolver:
+  DNS to it goes to the Gateway zone. Use `P.gateway_ips()` before treating
+  an in-subnet DNS address as a peer.
+- **Port and address objects resolve through legacy `rest/firewallgroup`**
+  (`port_group_id` / `ip_group_id` on a policy side, with
+  `port_matching_type` / `matching_target_type: OBJECT`). No v2 route found.
+  `get_firewall_groups()` returns None on failure; treat that as unknown.
+- **Predefined and custom policies share one ordered list per zone pair**:
+  custom 10000+, predefined 30000+, the pair default at 2147483647. The
+  internet toggle shows up as a predefined `Block <subnet> Internet Access`
+  (IPv4 only). Walk them all by index; don't special-case.
+- **`ipv6_interface_type: "none"`** on a LAN means IPv6 is off for that
+  network, whatever the WAN has. Missing field: assume on.
+- **Per-password SSIDs:** `private_preshared_keys[].networkconf_id` lists
+  extra networks one SSID puts devices on; `networkconf_id` alone misses them.
+- **Policy `hits` is absent on some rules.** A missing count is not zero.

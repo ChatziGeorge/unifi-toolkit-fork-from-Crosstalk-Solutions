@@ -18,16 +18,17 @@ print_success() {
     echo -e "${GREEN}✓${NC} $1"
 }
 
+# Messages go to stderr so they stay visible when called inside $(...)
 print_error() {
-    echo -e "${RED}✗${NC} $1"
+    echo -e "${RED}✗${NC} $1" >&2
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}⚠${NC} $1" >&2
 }
 
 print_info() {
-    echo -e "${CYAN}ℹ${NC} $1"
+    echo -e "${CYAN}ℹ${NC} $1" >&2
 }
 
 # Show usage
@@ -54,25 +55,36 @@ check_python() {
     elif command -v python &> /dev/null; then
         PYTHON_CMD="python"
     else
-        print_error "Python 3 is required but not found!"
-        exit 1
+        # Optional: hash_password falls back to htpasswd
+        PYTHON_CMD=""
     fi
 }
 
-# Hash password with bcrypt
-# Uses stdin to avoid shell injection vulnerabilities with special characters
+# Hash password with bcrypt.
+# Tries Python bcrypt first, then htpasswd (built into macOS; on Ubuntu:
+# sudo apt install apache2-utils). The password is passed on stdin so it
+# never appears in the process list.
 hash_password() {
     local password="$1"
-    echo "$password" | $PYTHON_CMD -c "
+    local hash=""
+    if [ -n "$PYTHON_CMD" ]; then
+        hash=$(printf '%s\n' "$password" | $PYTHON_CMD -c "
 import sys
 import bcrypt
 password = sys.stdin.readline().rstrip('\n')
 print(bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
-" 2>/dev/null || {
+" 2>/dev/null || true)
+    fi
+    if [ -z "$hash" ] && command -v htpasswd &> /dev/null; then
+        hash=$(printf '%s\n' "$password" | htpasswd -niBC 12 user 2>/dev/null | cut -d: -f2- | tr -d '\r\n' || true)
+    fi
+    if [[ ! "$hash" =~ ^\$2[aby]\$ ]]; then
         print_error "Failed to hash password"
-        print_info "Make sure bcrypt is installed: pip install bcrypt"
+        print_info "Install either the Python bcrypt package (pip install bcrypt)"
+        print_info "or htpasswd (Ubuntu: sudo apt install apache2-utils) and try again."
         exit 1
-    }
+    fi
+    echo "$hash"
 }
 
 # Validate password meets requirements
@@ -164,7 +176,8 @@ update_username() {
     # Check if AUTH_USERNAME exists in .env
     if grep -q "^AUTH_USERNAME=" .env; then
         # Update existing line
-        sed -i "s|^AUTH_USERNAME=.*|AUTH_USERNAME=$new_username|" .env
+        # -i.bak works with both GNU sed (Linux) and BSD sed (macOS)
+        sed -i.bak "s|^AUTH_USERNAME=.*|AUTH_USERNAME=$new_username|" .env && rm -f .env.bak
     else
         # Add new line
         echo "AUTH_USERNAME=$new_username" >> .env
@@ -187,7 +200,7 @@ update_password_hash() {
         # Escape dollar signs for Docker Compose ($ -> $$)
         local escaped_hash="${new_hash//\$/\$\$}"
         # Use a different delimiter for sed since the hash contains $
-        sed -i "s|^AUTH_PASSWORD_HASH=.*|AUTH_PASSWORD_HASH=$escaped_hash|" .env
+        sed -i.bak "s|^AUTH_PASSWORD_HASH=.*|AUTH_PASSWORD_HASH=$escaped_hash|" .env && rm -f .env.bak
     else
         # Add new line
         # Escape dollar signs for Docker Compose ($ -> $$)

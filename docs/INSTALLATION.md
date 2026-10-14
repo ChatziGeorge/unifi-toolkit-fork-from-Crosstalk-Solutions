@@ -126,7 +126,10 @@ The setup wizard will guide you through configuration:
 You'll be prompted to choose between:
 
 1. **Local** - For LAN-only access (no authentication, no HTTPS)
-2. **Production** - For internet-facing access (authentication + HTTPS)
+2. **LAN with login** - For LAN-only access with authentication (HTTPS with a self-signed certificate, no public domain needed)
+3. **Production** - For internet-facing access (authentication + HTTPS)
+
+The wizard needs no Python packages, and it also runs on macOS (for example, with Docker Desktop or OrbStack). It hashes the admin password with Python `bcrypt` when installed, otherwise with `htpasswd`, which ships with macOS. On Ubuntu: `sudo apt install apache2-utils`.
 
 > **Run setup before `docker compose up`.** The container mounts `./.env` as a file. If it doesn't exist yet, Docker creates an empty `.env` *directory* in its place, and the app starts with no configuration.
 
@@ -139,7 +142,7 @@ Use this option if UI Toolkit will only be accessed from your local network.
 ### Setup Wizard Prompts
 
 ```
-Select deployment type [1-2]: 1
+Select deployment type [1-3]: 1
 
 ✓ Selected: local deployment
 ✓ Encryption key generated
@@ -211,6 +214,33 @@ docker compose restart
 
 ---
 
+## LAN Deployment with Login
+
+Use this option to require a username and password while keeping UI Toolkit on your local network. The login cookie only works over HTTPS, so Caddy serves the toolkit with a self-signed certificate (`tls internal`) for your server's IP or LAN hostname. No public domain, open ports, or Let's Encrypt are needed.
+
+```
+Select deployment type [1-3]: 2
+Server IP or LAN hostname: 192.168.1.50
+Admin username [admin]: admin
+Admin password: ************
+```
+
+The wizard writes `CADDYFILE=Caddyfile.lan` to `.env`, so Caddy uses the self-signed config. Start it with the production profile:
+
+```bash
+docker compose --profile production up -d
+```
+
+Then open `https://192.168.1.50` (or the hostname you entered). Your browser warns about the certificate the first time. Accept it once, or trust Caddy's root CA to get rid of the warning:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .
+```
+
+Do not port-forward this setup. For access from outside your network, use a VPN (WireGuard, Tailscale, UniFi VPN).
+
+---
+
 ## Production Deployment (Internet-Facing)
 
 Use this option if UI Toolkit will be accessible from the internet.
@@ -224,7 +254,7 @@ Use this option if UI Toolkit will be accessible from the internet.
 ### Setup Wizard Prompts
 
 ```
-Select deployment type [1-2]: 2
+Select deployment type [1-3]: 3
 
 ╔═══════════════════════════════════════════════════════════════╗
 ║  IMPORTANT: Network Security                                  ║

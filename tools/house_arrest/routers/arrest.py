@@ -14,11 +14,15 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException
 
 from shared.unifi_session import get_shared_client
+from tools.house_arrest import dns_audit as A
 from tools.house_arrest import policies as P
+from tools.house_arrest import reach as R
+from tools.house_arrest import rule_check as RC
 from tools.house_arrest.models import (
     ArrestSummary,
     BlockedFlow,
     ClientInfo,
+    DnsAuditApplyRequest,
     DnsLockdownEntry,
     DnsLockdownRequest,
     DnsLockdownResponse,
@@ -417,6 +421,8 @@ async def get_state():
         for nid in ((pol.get("source") or {}).get("network_ids") or []):
             if nid not in entry.network_ids:
                 entry.network_ids.append(nid)
+        if (pol.get("source") or {}).get("matching_target") == "ANY":
+            entry.zone_wide = True
         dest = pol.get("destination") or {}
         if pol.get("action") == "ALLOW" and dest.get("ips"):
             entry.resolvers = list(dest.get("ips"))
@@ -429,6 +435,8 @@ async def get_state():
     if all_networks:
         live_ids = {n.get("_id") for n in all_networks}
         for entry in dns_by_label.values():
+            if entry.zone_wide:
+                continue
             if not any(nid in live_ids for nid in entry.network_ids):
                 entry.network_missing = True
 
@@ -596,6 +604,10 @@ async def list_wlans():
         stations = await client.get_clients()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+    try:
+        net_names = {n.get("_id"): n.get("name") for n in await client.get_networks()}
+    except Exception:
+        net_names = {}
 
     # get_clients() returns a dict keyed by MAC, not a list — iterating it
     # directly yields MAC strings and silently counts nothing.
@@ -615,8 +627,13 @@ async def list_wlans():
             name=name,
             enabled=bool(w.get("enabled", True)),
             isolated=bool(w.get("l2_isolation")),
-            client_count=counts.get(name, 0),
+            # Clients are matched by SSID name (get_clients() keeps only
+            # `essid`), so two SSIDs with one name would share a count. A
+            # disabled SSID cannot have clients: it gets 0, not its twin's.
+            client_count=counts.get(name, 0) if w.get("enabled", True) else 0,
             network_id=w.get("networkconf_id"),
+            network_name=", ".join(
+                (net_names.get(i) or "unknown").strip() for i in P.wlan_networks(w)) or None,
         ))
     out.sort(key=lambda x: (not x.enabled, x.name.lower()))
     return out
@@ -1028,11 +1045,18 @@ async def dns_lockdown(req: DnsLockdownRequest):
                    "duplicate rules that both have to be cleaned up."),
         )
 
+    # The gateway's own addresses are reached through the Gateway zone, which
+    # these rules never block, so they need no allow and are not "on the
+    # network itself" (see P.gateway_ips()).
+    gw = P.gateway_ips(networks)
+    gateway_resolvers = [ip for ip in req.resolver_ips if ip in gw]
+    peer_resolvers = [ip for ip in req.resolver_ips if ip not in gw]
+
     # A resolver living on one of the locked-down networks cannot be reached
     # through the gateway, so the rules would never see that traffic.
     unreachable = []
     for n in chosen:
-        for ip in req.resolver_ips:
+        for ip in peer_resolvers:
             if P._ip_in_subnet(ip, n.get("ip_subnet")):
                 unreachable.append(f"{ip} is on {n.get('name')} itself")
 
@@ -1040,7 +1064,7 @@ async def dns_lockdown(req: DnsLockdownRequest):
     # through. Splitting them is what stops a public resolver like 1.1.1.1
     # from being allowed on the LAN side while the internet block kills it.
     lan_resolvers, wan_resolvers, foreign_resolvers = P.classify_resolvers(
-        req.resolver_ips, networks, zones, client_zone_id
+        peer_resolvers, networks, zones, client_zone_id
     )
 
     try:
@@ -1060,6 +1084,7 @@ async def dns_lockdown(req: DnsLockdownRequest):
             indexes=indexes,
             block_dot=req.block_dot,
             foreign_resolvers=foreign_resolvers,
+            gateway_resolvers=gateway_resolvers,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1067,13 +1092,22 @@ async def dns_lockdown(req: DnsLockdownRequest):
     # The likeliest self-inflicted outage: DHCP still advertising a resolver
     # these rules are about to block. Leads the caveats because it is the one
     # that actually breaks the network.
-    caveats = P.dhcp_dns_conflicts(chosen, req.resolver_ips)
+    caveats = P.dhcp_dns_conflicts(chosen, req.resolver_ips, networks)
     caveats += [
         f"{u} is on the same network as the devices it would serve, so "
         f"traffic to {u} never passes the gateway and DNS Lockdown can't "
         f"control it." for u in unreachable
     ]
     caveats += list(P.DNS_CAVEATS)
+    if gateway_resolvers:
+        caveats.append(
+            f"{', '.join(gateway_resolvers)} "
+            + ("is" if len(gateway_resolvers) == 1 else "are")
+            + " the gateway itself. DNS Lockdown never blocks the gateway, so "
+              "devices keep reaching it and no allow rule is needed. The "
+              "gateway then looks names up using its own upstream DNS "
+              "(Settings -> Internet -> your WAN -> DNS Server)."
+        )
     if wan_resolvers:
         caveats.append(
             f"{', '.join(wan_resolvers)} "
@@ -1178,6 +1212,196 @@ async def dns_lockdown(req: DnsLockdownRequest):
 
     return DnsLockdownResponse(dry_run=False, created=created, caveats=caveats,
                                notices=notices, notices_failed=bool(failed))
+
+
+async def _run_dns_audit(client, ignored: Optional[List[str]] = None) -> Tuple[Dict, List[Dict]]:
+    """Read everything the audit needs and run it. Returns (audit, policies)."""
+    networks = await client.get_networks()
+    zones = await client.get_firewall_zones()
+    policies = await client.get_firewall_policies()
+    groups = await client.get_firewall_groups()
+
+    # Each interception read is independent; failure means unknown, not off.
+    interception: Dict = {}
+    try:
+        doh = await client.get_site_setting("doh")
+        interception["encrypted_dns"] = bool(doh and doh.get("state") not in (None, "off"))
+    except Exception:
+        pass
+    try:
+        ips = await client.get_site_setting("ips")
+        interception["ad_blocking"] = bool(ips and ips.get("ad_blocking_enabled"))
+    except Exception:
+        pass
+    try:
+        interception["content_filtered"] = P.content_filtered_ids(await client.get_content_filters())
+    except Exception:
+        pass
+
+    result = A.audit(networks, zones, policies, groups, interception, ignored)
+    result["groups_unreadable"] = groups is None
+    return result, policies
+
+
+@router.get("/dns-audit")
+async def dns_audit_view(ignore: Optional[str] = None):
+    """
+    Per-network DNS status, read from EVERY policy (the user's own, UniFi's
+    built-in ones and House Arrest's), plus gap-filling suggestions in both
+    styles. Read-only.
+    """
+    client, err = await _client_or_error()
+    if err:
+        return {"connected": False, "error": err}
+    try:
+        result, _ = await _run_dns_audit(client, (ignore or "").split(","))
+    except Exception as e:
+        logger.error(f"DNS audit failed: {e}")
+        return {"connected": False, "error": str(e)}
+    result["connected"] = True
+    return result
+
+
+@router.post("/dns-audit/apply")
+async def dns_audit_apply(req: DnsAuditApplyRequest):
+    """
+    Create the chosen suggestions.
+
+    Re-runs the audit first, so a suggestion is only applied if the console
+    still has that gap; one changed in the meantime is refused, not guessed
+    at. Every rule carries the [HouseArrest][DNS] markers, so it shows in the
+    DNS Lockdown list and releases like any other.
+
+    After creating, the audit runs again and every network a suggestion was
+    meant to fill is checked. A path that still is not blocked (another rule
+    runs first) is reported, never shown as fixed.
+    """
+    if not req.suggestion_ids:
+        raise HTTPException(status_code=400, detail="Pick at least one suggestion")
+    client, err = await _client_or_error()
+    if err:
+        return {"dry_run": req.dry_run, "error": err}
+    try:
+        audit, existing = await _run_dns_audit(client, req.ignored_network_ids)
+    except Exception as e:
+        return {"dry_run": req.dry_run, "error": str(e)}
+
+    by_id = {s["id"]: s for s in audit["suggestions"]}
+    stale = [i for i in req.suggestion_ids if i not in by_id]
+    if stale:
+        return {"dry_run": req.dry_run,
+                "error": ("These suggestions no longer apply, because the console changed "
+                          "since the page loaded. Refresh and pick again.")}
+    chosen = [by_id[i] for i in req.suggestion_ids]
+
+    # Both styles of the same gap would write the rules twice.
+    seen = {}
+    for s in chosen:
+        key = (s["zone_id"], s["channel"], s["family"])
+        if key in seen:
+            return {"dry_run": req.dry_run,
+                    "error": (f"\"{s['title']}\" and \"{seen[key]}\" fill the same gap. "
+                              "Pick one style for it.")}
+        seen[key] = s["title"]
+
+    total = sum(len(s["policies"]) for s in chosen)
+    indexes = iter(P.next_free_index(existing, total))
+    plan = []
+    for s in chosen:
+        payloads = []
+        for pol in s["policies"]:
+            pol = dict(pol)
+            pol["index"] = next(indexes)
+            payloads.append(pol)
+        plan.append((s, payloads))
+
+    if req.dry_run:
+        return {"dry_run": True,
+                "plan": [{"id": s["id"], "title": s["title"], "payloads": pl}
+                         for s, pl in plan]}
+
+    created: List[Dict] = []
+
+    async def roll_back():
+        for done in created:
+            pid = done.get("_id")
+            if pid:
+                await client.delete_firewall_policy(pid)
+
+    for s, payloads in plan:
+        mine = []
+        for payload in payloads:
+            result = await client.create_firewall_policy(payload)
+            if result is None:
+                await roll_back()
+                return {"dry_run": False,
+                        "error": f"Failed to create {payload.get('name')!r}; "
+                                 "everything was rolled back, nothing changed."}
+            created.append(result)
+            mine.append(result)
+        has_allow = any(p.get("action") == "ALLOW" for p in payloads)
+        if not P.dns_order_is_safe(mine, expect_allow=has_allow):
+            await roll_back()
+            return {"dry_run": False,
+                    "error": (f"For \"{s['title']}\" the gateway placed an allow rule "
+                              "after its block, which would cut DNS. Everything was "
+                              "rolled back, nothing changed.")}
+
+    # Verify against the console, not against what was sent.
+    notices: List[str] = []
+    try:
+        after, _ = await _run_dns_audit(client, req.ignored_network_ids)
+        rows = {r["name"]: r for r in after["rows"]}
+        for s, _ in plan:
+            for name in s["fills"]:
+                row = rows.get(name)
+                ch = next((c for c in (row or {}).get("channels", [])
+                           if c["key"] == s["channel"]), None)
+                if not ch:
+                    continue
+                fam = s["family"]
+                ok4 = fam == "v6" or ch["v4"] == "blocked"
+                ok6 = fam == "v4" or ch["v6"] in ("blocked", "n/a")
+                if not (ok4 and ok6):
+                    notices.append(
+                        f"{name}: {ch['label']} still shows \"{ch['value']}\" after "
+                        f"applying. {ch['detail']}")
+    except Exception as e:
+        notices.append(f"Couldn't re-check the result: {e}")
+
+    try:
+        moved, failed = await _requeue_shadowing_blocks(client)
+        if failed:
+            notices.append("Couldn't move the device lockdown for " + ", ".join(failed)
+                           + " behind the new DNS rules. Release it on the Devices tab "
+                             "and apply it again.")
+    except Exception:
+        pass
+
+    return {"dry_run": False, "created": created, "notices": notices,
+            "verified": not notices}
+
+
+@router.get("/rule-check")
+async def rule_check():
+    """
+    Read-only check of every custom firewall rule: does it match anything,
+    is it shadowed or duplicated by an earlier rule, IPv4 only, consistent
+    with similar rules in other zones; plus groups no rule uses.
+    """
+    client, err = await _client_or_error()
+    if err:
+        return {"connected": False, "error": err}
+    try:
+        result = RC.check(await client.get_firewall_policies(),
+                          await client.get_firewall_zones(),
+                          await client.get_networks(),
+                          await client.get_firewall_groups())
+    except Exception as e:
+        logger.error(f"Rule check failed: {e}")
+        return {"connected": False, "error": str(e)}
+    result["connected"] = True
+    return result
 
 
 @router.post("/dns-release", response_model=DnsLockdownResponse)
@@ -1386,9 +1610,41 @@ async def inspect():
         if n.get("_id") and n.get("network_isolation_enabled")
     }
 
+    # Rule-derived reachability per network (reach.py): shows when the zone
+    # isolates a network whose isolation flag is off (Guests in Hotspot).
+    hints = None
+    try:
+        groups = await client.get_firewall_groups()
+        hints = {}
+        for n in networks:
+            if n.get("purpose") == "wan" or not n.get("_id") or not n.get("ip_subnet"):
+                continue
+            summ = R.isolation_summary(n, networks, zones, all_policies, groups)
+            hints[n["_id"]] = R.isolation_cell(
+                summ, bool(n.get("network_isolation_enabled")))
+    except Exception as e:
+        logger.warning(f"Reachability check failed: {e}")
+        hints = None
+
+    wifi = None
+    try:
+        wifi = {}
+        for w in await client.get_wlans():
+            main = w.get("networkconf_id")
+            for nid in P.wlan_networks(w):
+                wifi.setdefault(nid, []).append({
+                    "name": w.get("name") or "(unnamed)",
+                    "enabled": bool(w.get("enabled", True)),
+                    "isolated": bool(w.get("l2_isolation")),
+                    "per_password": nid != main,
+                })
+    except Exception:
+        wifi = None
+
     matrix = IsolationMatrix(**P.build_isolation_matrix(
         networks, zones, device_isolation_ids=di_ids, coverage=coverage,
-        switch_acl_supported=acl_supported, isolation_exceptions=holes))
+        switch_acl_supported=acl_supported, isolation_exceptions=holes,
+        isolation_hints=hints, wifi_by_network=wifi))
 
     return InspectionResponse(
         connected=True, networks=net_models,

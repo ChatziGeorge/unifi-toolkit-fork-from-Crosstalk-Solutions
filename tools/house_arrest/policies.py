@@ -631,6 +631,7 @@ def build_dns_lockdown(
     indexes: List[int],
     block_dot: bool = False,
     foreign_resolvers: Optional[List[Dict]] = None,
+    gateway_resolvers: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     Build the DNS Lockdown policy set.
@@ -659,12 +660,15 @@ def build_dns_lockdown(
         foreign_resolvers: approved resolvers on LAN networks in OTHER zones —
             no policy is written for them, they only relax the no-resolver
             guard, because nothing in this set blocks their zone pair anyway
+        gateway_resolvers: approved addresses that are the gateway itself —
+            the same: reached through the Gateway zone, never blocked here
     """
     if not network_ids:
         raise ValueError("At least one network is required")
-    # A resolver in a foreign zone needs no ALLOW (nothing here blocks that
-    # zone pair), so a foreign-only selection legitimately builds blocks-only.
-    if not (lan_resolvers or wan_resolvers or foreign_resolvers):
+    # A resolver in a foreign zone, or the gateway itself, needs no ALLOW
+    # (nothing here blocks that zone pair), so such a selection legitimately
+    # builds blocks-only.
+    if not (lan_resolvers or wan_resolvers or foreign_resolvers or gateway_resolvers):
         raise ValueError("At least one approved resolver is required")
     needed = dns_policy_count(block_dot, bool(lan_resolvers), bool(wan_resolvers))
     if len(indexes) < needed:
@@ -784,7 +788,35 @@ def dhcp_dns_of(network: Dict) -> List[str]:
     return [v for v in (network.get(f) for f in DHCP_DNS_FIELDS) if v]
 
 
-def dhcp_dns_conflicts(networks: List[Dict], resolver_ips: List[str]) -> List[str]:
+def gateway_ips(networks: List[Dict]) -> set:
+    """
+    Every address the gateway itself answers on: the host part of each LAN's
+    `ip_subnet` ("10.0.3.1/27" -> "10.0.3.1").
+
+    MEASURED 2026-10-14: setting a network's DHCP DNS explicitly to its own
+    gateway address (the "UniFi as DNS" setup) stores that address in
+    dhcpd_dns_1. It sits inside the subnet, but it is NOT a same-subnet
+    resolver: traffic to it goes to the gateway (the Gateway zone), so firewall
+    policies do see it, and DNS Lockdown's blocks never cover it. Treating it
+    as a peer on the VLAN raised a false "no firewall rule can filter this"
+    warning on every such network, and made the neighbour block refuse to
+    apply because no client owns that IP.
+    """
+    out = set()
+    for n in networks or []:
+        if n.get("purpose") == "wan":
+            continue
+        sub = n.get("ip_subnet")
+        if sub and "/" in sub:
+            out.add(sub.split("/", 1)[0].strip())
+    return out
+
+
+def dhcp_dns_conflicts(
+    networks: List[Dict],
+    resolver_ips: List[str],
+    all_networks: Optional[List[Dict]] = None,
+) -> List[str]:
     """
     Warn where DHCP hands out a resolver the lockdown is about to block.
 
@@ -800,13 +832,14 @@ def dhcp_dns_conflicts(networks: List[Dict], resolver_ips: List[str]) -> List[st
     Returns one message per affected network, empty when DHCP already agrees.
     """
     approved = {str(ip).strip() for ip in resolver_ips or []}
+    # The gateway is never blocked by these rules -- its own DNS service
+    # answers locally -- so handing out a gateway address is never a conflict,
+    # whether DHCP is on Auto or names the gateway explicitly.
+    approved |= gateway_ips(all_networks or networks)
     out = []
     for n in networks or []:
         handed = dhcp_dns_of(n)
         if not handed:
-            # No override: DHCP points at the gateway, which is not in the
-            # approved list either, but the gateway is never blocked by these
-            # rules -- its own DNS service answers locally.
             continue
         stale = [h for h in handed if h not in approved]
         if not stale:
@@ -1372,8 +1405,11 @@ def device_dns_resolvers(
     """
     allow: List[str] = []
     skipped: List[str] = []
+    # Any gateway address is reached through the Gateway zone, which the
+    # device block never covers, so it needs no allow (see gateway_ips()).
+    gw = gateway_ips(networks)
     for net in device_networks or []:
-        handed = dhcp_dns_of(net)
+        handed = [ip for ip in dhcp_dns_of(net) if ip not in gw]
         lan, _wan, _foreign = classify_resolvers(handed, networks, zones, client_zone_id)
         cross = [ip for ip in lan if not _ip_in_subnet(ip, net.get("ip_subnet"))]
         if not cross:
@@ -1824,11 +1860,14 @@ MATRIX_COLUMNS = [
     {"key": "zone", "label": "Zone",
      "help": "Networks in the same zone reach each other by default."},
     {"key": "isolation", "label": "Network isolation",
-     "help": "Blocks this network from reaching your other networks."},
-    {"key": "device_isolation", "label": "Device isolation",
-     "help": "Stops devices on this network from reaching each other. Device "
-             "isolation only fully works for wired devices plugged into a UniFi "
-             "switch model that supports it."},
+     "help": "Whether your other networks and this one can reach each other, "
+             "from the isolation setting AND your firewall rules."},
+    {"key": "device_isolation", "label": "Device isolation (wired)",
+     "help": "Stops devices on this network from reaching each other. Only "
+             "fully works for wired devices on a UniFi switch that supports it."},
+    {"key": "wifi_isolation", "label": "Wi-Fi client isolation",
+     "help": "Stops Wi-Fi devices on the same SSID reaching each other. Set "
+             "per SSID, in the Wi-Fi list below."},
     {"key": "internet", "label": "Internet access",
      "help": "Whether devices here can reach the internet at all."},
     {"key": "mdns", "label": "mDNS forwarding",
@@ -1937,6 +1976,84 @@ def vlan_id(value) -> Optional[int]:
     return None
 
 
+def wlan_networks(wlan: Dict) -> List[str]:
+    """
+    Every network an SSID can put devices on.
+
+    MEASURED 2026-10-14: with per-password networks ("private pre-shared
+    keys") one SSID puts devices on several networks; the SSID's own
+    `networkconf_id` names only one of them. Reading only that showed IoT as
+    "No Wi-Fi" while an SSID served it.
+    """
+    ids = [wlan.get("networkconf_id")]
+    if wlan.get("private_preshared_keys_enabled"):
+        ids += [k.get("networkconf_id") for k in wlan.get("private_preshared_keys") or []]
+    out = []
+    for i in ids:
+        if i and i not in out:
+            out.append(i)
+    return out
+
+
+WIFI_SCOPE = (" Client isolation only concerns devices on this same network. "
+              "Devices on your other networks, even ones that joined the same "
+              "SSID with a different password, are kept apart by Network "
+              "isolation and your firewall rules, not by this setting.")
+
+
+def wifi_isolation_cell(ssids: List[Dict], network_name: str) -> Dict:
+    """
+    One network's Wi-Fi client isolation, from its SSIDs ({name, enabled,
+    isolated, per_password}). Disabled SSIDs carry no devices, so they never
+    decide the state, but they are named so a later re-enable is no surprise.
+
+    Off is grey, not amber: it is the normal setting for a home network
+    (casting, printing), a choice rather than a fault.
+    """
+    live = [w for w in ssids if w.get("enabled")]
+    off = [w for w in ssids if not w.get("enabled")]
+
+    def names(ws):
+        return ", ".join(
+            f"{w['name']} ({'on' if w.get('isolated') else 'off'}"
+            + (", by password" if w.get("per_password") else "") + ")" for w in ws)
+    tail = (f" Disabled SSIDs here: {names(off)}." if off else "") + \
+        " Change it per SSID in the Wi-Fi list below."
+    if not ssids:
+        return _cell("neutral", "No Wi-Fi",
+                     f"No SSID puts devices on {network_name}. Only wired devices "
+                     "are on it.")
+    if not live:
+        # The SSID exists but is switched off: say so, and still show what its
+        # isolation setting would be when it comes back.
+        on_all = all(w.get("isolated") for w in off)
+        on_none = not any(w.get("isolated") for w in off)
+        state = "On" if on_all else ("Off" if on_none else "Mixed")
+        return _cell("neutral", f"Disabled · {state}",
+                     f"Every SSID for {network_name} is switched off, so no Wi-Fi "
+                     f"devices are on it now: {names(off)}. When switched back on, "
+                     f"client isolation would be {state.lower()}."
+                     " Change it per SSID in the Wi-Fi list below.")
+    on = [w for w in live if w.get("isolated")]
+    if len(on) == len(live):
+        return _cell("good", "On",
+                     f"On for {names(live)}. Wi-Fi devices on {network_name} can't "
+                     "see or talk to each other directly; a network scanner on one "
+                     "won't find the others. They still reach the internet and "
+                     "whatever your firewall allows." + WIFI_SCOPE + tail)
+    if not on:
+        return _cell("neutral", "Off",
+                     f"Off for {names(live)}. Wi-Fi devices on {network_name} can "
+                     "see and talk to each other directly: casting and printing "
+                     "work, and a network scanner on one finds the others. Normal "
+                     "for a home network; turn it on for devices you don't trust."
+                     + WIFI_SCOPE + tail)
+    return _cell("warn", "Mixed",
+                 f"Not the same on every SSID here: {names(live)}. Devices that "
+                 "joined through an SSID with it off can see each other."
+                 + WIFI_SCOPE + tail)
+
+
 def build_isolation_matrix(
     networks: List[Dict],
     zones: List[Dict],
@@ -1944,6 +2061,8 @@ def build_isolation_matrix(
     coverage: Optional[Dict[str, Dict[str, int]]] = None,
     switch_acl_supported: Optional[bool] = None,
     isolation_exceptions: Optional[Dict[str, List[str]]] = None,
+    isolation_hints: Optional[Dict[str, Dict]] = None,
+    wifi_by_network: Optional[Dict[str, List[Dict]]] = None,
 ) -> Dict:
     """
     Build the network-by-attribute isolation matrix.
@@ -2024,12 +2143,19 @@ def build_isolation_matrix(
         else:
             iso_detail = ("Off. Devices here can reach your other networks unless "
                           "a firewall rule stops them.")
-        cells["isolation"] = _cell(
-            "good" if iso else "warn",
-            "On" if iso else "Off",
-            iso_detail,
-            editable=True,
-        )
+        # Rule-derived reachability (reach.py, computed by the caller): the
+        # flag is one way to isolate a network, the zone's rules are another.
+        hint = (isolation_hints or {}).get(nid)
+        if hint:
+            cells["isolation"] = _cell(hint["state"], hint["label"], hint["text"],
+                                       editable=True)
+        else:
+            cells["isolation"] = _cell(
+                "good" if iso else "warn",
+                "On" if iso else "Off",
+                iso_detail,
+                editable=True,
+            )
 
         # Device isolation (switch ACL). A SITE-LEVEL list, like mDNS: the
         # toggle adds or removes this network from `acl_device_isolation`.
@@ -2055,10 +2181,18 @@ def build_isolation_matrix(
                 site_supported=switch_acl_supported,
             )
 
+        # Wi-Fi client isolation, per network, from the SSIDs that put their
+        # clients on it. None = the SSID list was not read: no cell claim.
+        if wifi_by_network is None:
+            cells["wifi_isolation"] = _cell("neutral", "—", "The Wi-Fi list could not be read.")
+        else:
+            cells["wifi_isolation"] = wifi_isolation_cell(wifi_by_network.get(nid) or [], name)
+
         # Internet access
         inet = n.get("internet_access_enabled")
+        # Green = allowed, red = blocked (the user's reading of "access").
         cells["internet"] = _cell(
-            "warn" if inet is not False else "good",
+            "good" if inet is not False else "bad",
             "Allowed" if inet is not False else "Blocked",
             ("Devices here can reach the internet."
                if inet is not False else
@@ -2118,9 +2252,15 @@ def build_isolation_matrix(
         # filter it — that is the measured hole (a locked-down device still
         # resolved names through a same-subnet resolver). A resolver on another
         # VLAN crosses the gateway and therefore can be filtered.
-        servers = [n.get(f"dhcpd_dns_{i}") for i in (1, 2, 3, 4)]
-        servers = [x for x in servers if x]
-        local = [x for x in servers if _ip_in_subnet(x, n.get("ip_subnet"))]
+        # The gateway's own addresses are not same-subnet resolvers: DNS to
+        # them goes to the gateway, where firewall policies apply (see
+        # gateway_ips()). Only a server that is a real peer on this subnet is
+        # the hole.
+        servers = dhcp_dns_of(n)
+        gw = gateway_ips(networks)
+        local = [x for x in servers
+                 if x not in gw and _ip_in_subnet(x, n.get("ip_subnet"))]
+        others = [x for x in servers if x not in gw]
 
         if local:
             cells["dns"] = _cell(
@@ -2134,15 +2274,23 @@ def build_isolation_matrix(
                   "up names, and the DNS server looks them up on the internet. "
                   "Measured on a real locked-down device."
             )
-        elif servers:
+        elif others:
             cells["dns"] = _cell(
                 "neutral", ", ".join(servers),
-                f"DHCP hands out {', '.join(servers)}, which "
-                + ("is" if len(servers) == 1 else "are")
+                f"DHCP hands out {', '.join(others)}, which "
+                + ("is" if len(others) == 1 else "are")
                 + " outside this network. DNS queries to "
-                + ("that server" if len(servers) == 1 else "those servers")
+                + ("that server" if len(others) == 1 else "those servers")
                 + " cross the gateway, so a DNS Lockdown on this network can "
                   "control them."
+            )
+        elif servers:
+            cells["dns"] = _cell(
+                "good", f"Gateway ({', '.join(servers)})",
+                f"DHCP hands out {', '.join(servers)}, which "
+                + ("is the gateway's" if len(servers) == 1 else "are the gateway's")
+                + " own address. Devices here use the gateway as their DNS "
+                  "server, so DNS can be controlled at the gateway."
             )
         else:
             cells["dns"] = _cell(
@@ -2522,11 +2670,14 @@ def same_network_resolvers(
     (offline), which the caller must not silently cut off. Resolvers on other
     networks are routed through the gateway, which the ALLOW already covers.
     """
-    if not network or network.get("dhcpd_dns_enabled") is False:
+    if not network:
         return [], []
     subnet = network.get("ip_subnet")
-    handed = [network.get(f"dhcpd_dns_{i}") for i in (1, 2, 3, 4)]
-    local = [ip for ip in handed if ip and _ip_in_subnet(ip, subnet)]
+    # The gateway's own address is already in the ALLOW (by its LAN MACs), and
+    # no client owns it, so counting it would refuse the apply as "missing".
+    gw = gateway_ips([network])
+    local = [ip for ip in dhcp_dns_of(network)
+             if ip not in gw and _ip_in_subnet(ip, subnet)]
     by_ip = {}
     for c in (clients or {}).values():
         if c.get("ip") and c.get("mac"):

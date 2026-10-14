@@ -4,13 +4,14 @@ Lock a device or a whole network down using UniFi's zone-based firewall.
 Wired or wireless, reversible in one click, and honest about exactly what is
 and is not being blocked.
 
-House Arrest is three tools sharing one page:
+House Arrest is four tools sharing one page:
 
 | Tool | What it does |
 |---|---|
-| **Networks** | An editable table of your VLANs (network isolation, device isolation, internet access, mDNS, DNS), plus per-SSID Wi-Fi client isolation |
-| **DNS Lockdown** | Force chosen networks to use only the DNS servers you approve, and block every other DNS server |
+| **Networks** | An editable table of your VLANs (network isolation, device isolation, Wi-Fi client isolation, internet access, mDNS, DNS), plus per-SSID Wi-Fi client isolation |
+| **DNS Lockdown** | See which DNS servers each network can really reach, close the gaps, or force chosen networks onto approved DNS servers |
 | **Devices** | Per-device lockdown presets by MAC address: Internet only, LAN only, No internet, or Quarantine |
+| **Rule check** | A read-only check of your own firewall rules: does each one match anything, does an earlier rule already decide it, is it IPv4 only |
 
 ## Requirements
 
@@ -47,14 +48,27 @@ explains most of what you'll see in the UI:
 ## Networks tab
 
 A table of your VLANs showing each network's firewall zone, network
-isolation, device isolation, internet access, mDNS forwarding, and the DNS
-servers DHCP hands out. Cells marked with a pencil can be changed right from
+isolation, device isolation (wired), Wi-Fi client isolation, internet
+access, mDNS forwarding, and the DNS servers DHCP hands out. Cells marked with a pencil can be changed right from
 the table. Each change opens a confirm dialog with a diagram of how the
 network will be set up after you confirm.
 
 - **Network isolation** and **Internet access** change the same settings you
   would find in UniFi under Settings, Networks. House Arrest and the UniFi UI
   always show the same value for them.
+- **Network isolation is read from your firewall rules too,** not only from
+  the setting. A network can be kept apart by its zone (a Guest network in
+  the Hotspot zone) or by a rule you wrote (an inter-VLAN block), with the
+  setting off. The cell shows:
+  - **Isolated** or **Isolated by zone** (green): nothing gets in or out.
+    A "*" marks a narrow exception made only by UniFi's own built-in rules,
+    explained in the hover.
+  - **Partial** (amber): blocked by default, but your rules open specific
+    paths. The hover lists them.
+  - **Off** (grey): other networks reach it by default.
+  The hover says which networks can reach this one and which it can reach,
+  and names the rules that keep it apart ("Kept apart by: your rule ...").
+  It is worked out from the rules in order, not from a traffic test.
 - **Device isolation** stops wired devices on a network from reaching each
   other. It is the same setting as Device Isolation (ACL) in UniFi. Device
   isolation only works on UniFi switch models that support MAC-based access
@@ -64,16 +78,59 @@ network will be set up after you confirm.
 - **mDNS** is a single site-wide list in UniFi (the Gateway mDNS Proxy
   scope). Turning mDNS on or off for one network here adds or removes it from
   that shared list, and the confirm dialog says so before you apply it.
-- **DNS** is read-only in the table. Change it from the DNS Lockdown tab.
+- **Wi-Fi client isolation** shows, per network, the client isolation of the
+  SSIDs that put devices on it, including SSIDs that put devices on several
+  networks by password: On, Off, Mixed, "Disabled · On/Off" (the SSID exists
+  but is switched off) or "No Wi-Fi". Change it per SSID in the list below.
+- **DNS** is read-only in the table. Change it from the DNS Lockdown tab. A
+  network whose DHCP hands out the gateway's own address counts as using the
+  gateway, not as a DNS server on the network.
+- A colour key sits under the table, and "What does a network scanner see?"
+  explains, on hover, what one device can find on its own network and on
+  your other networks.
 
-**Wi-Fi client isolation** is listed below the table, one row per SSID.
-Client isolation stops wireless devices on the same SSID from reaching each
-other. Wired devices aren't affected, so use Device isolation for those.
+**Wi-Fi client isolation** is listed below the table, one row per SSID,
+with the network(s) each SSID puts devices on. Client isolation stops
+wireless devices on the same network from seeing each other. Devices on
+different networks are kept apart by network isolation and your firewall
+rules, not by this setting. Wired devices aren't affected, so use Device
+isolation for those.
 
 ## DNS Lockdown tab
 
-DNS Lockdown lets devices on the networks you pick use only your approved
-DNS servers, and blocks every other DNS server.
+### DNS status by network
+
+The top of the tab reads every firewall rule on the console (yours, UniFi's
+built-in ones and House Arrest's), in the order the gateway runs them, and
+shows per network:
+
+- the DNS server DHCP hands out,
+- whether DNS to the internet (port 53), DNS-over-TLS (853) and
+  DNS-over-HTTPS are blocked, and by which rule,
+- whether devices can use a DNS server on another network in the same zone,
+- an overall verdict: Locked, Partly locked or Open.
+
+It understands port and address groups, rules that only cover some devices,
+schedules, disabled rules, IPv4-only rules (checked against whether the
+network has IPv6 at all), and the network's "no internet" setting. Hover a
+cell for the rule that decides it.
+
+**Suggested fixes** appear only for real gaps. Pick a style first, each shown
+with its pros and cons: one rule set per network, or one per zone. Then tick
+the fixes you want, review them, and apply. Before applying, House Arrest
+reads the console again; after applying it checks that each gap actually
+closed. Everything it creates carries the House Arrest marker and appears
+under **Applied by House Arrest**, where Release removes it (after a
+confirmation). The gap then shows up again under Suggested fixes, so you can
+apply it again. "Don't suggest for <network>" hides a network you want left
+alone (remembered in your browser); a zone that holds such a network gets no
+zone-wide suggestion either.
+
+### Manual DNS Lockdown
+
+Under "Manual DNS Lockdown" you can still pick networks and approved DNS
+servers yourself. DNS Lockdown lets devices on the networks you pick use
+only your approved DNS servers, and blocks every other DNS server.
 
 **WARNING: DNS Lockdown will break any device with a hardcoded DNS server.**
 That is usually why you want it, but check the "What each network hands out
@@ -216,6 +273,28 @@ Quarantine adds none of these DNS rules. A quarantined device can still look up 
 The **blocked traffic view** shows what each lockdown stopped in the last 24
 hours. It only counts traffic blocked by House Arrest's own rules, never
 blocks from your other firewall rules.
+
+## Rule check tab
+
+A read-only check of every firewall rule you created. Each rule gets
+**Issue**, **Can improve**, **Note** or **OK**, with the reason:
+
+- **Matches nothing:** an empty or deleted address group, port group or list.
+- **Never takes effect, redundant or duplicate:** an earlier rule in the same
+  pair of zones already decides the same traffic.
+- **IPv4 only:** an Issue when a network in that zone has IPv6, otherwise
+  Can improve (so switching IPv6 on later doesn't open a gap).
+- **Rule order note:** the reply rule UniFi created for an allow sits after a
+  block. For information only.
+- **Compared with other rules:** a block that exists for some zones but not
+  others, or one that differs from its siblings. This hint compares rule
+  names after the "[zone]" tag, so it only works if you name rules that way.
+- **Disabled**, and **no hits recorded** (only when the controller reports a
+  count of 0).
+
+Below the table, **Groups no rule uses** lists port and address groups that
+no firewall rule refers to. Nothing on this tab changes anything; make
+changes in UniFi.
 
 ## Known limitations
 

@@ -175,7 +175,7 @@ h2 {
 
 .tool-tabs {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 0.75rem;
     margin-bottom: 1.25rem;
 }
@@ -1542,3 +1542,141 @@ table.matrix tr td:last-child .tip { left: auto; right: 0; }
 .modal-figure { margin: 0.9rem 0 0; }
 
 
+
+/* ---------- DNS status by network (dns_audit.py) ---------- */
+
+td.cell.is-bad {
+    background: color-mix(in srgb, var(--state-broken) 13%, var(--surface));
+    color: var(--state-broken);
+    font-weight: 600;
+}
+
+.dns-audit { margin-bottom: 2rem; }
+.dns-audit-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.dns-audit-head h3 { margin: 0; }
+table.dns-audit-table { min-width: 860px; }
+table.dns-audit-table th.net-col { width: 11rem; }
+
+.dns-suggest { margin-top: 1.5rem; }
+.dns-suggest h3 { margin-bottom: 0.25rem; }
+
+.style-pick {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.75rem;
+    margin: 0.75rem 0 1rem;
+}
+.style-card {
+    display: block;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--surface);
+    cursor: pointer;
+}
+.style-card.is-chosen {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 1px var(--primary-color);
+}
+.style-card input { margin-right: 0.4rem; }
+.style-title { font-weight: 600; }
+.style-card ul {
+    margin: 0.4rem 0 0;
+    padding-left: 1.1rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+.style-card ul.pros li::marker { content: "+  "; color: var(--state-enforcing); }
+.style-card ul.cons li::marker { content: "−  "; color: var(--state-broken); }
+
+.suggestion {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+}
+.suggestion.is-picked { border-color: var(--primary-color); }
+.suggestion input { margin-top: 0.2rem; }
+.suggestion-body { display: flex; flex-direction: column; gap: 0.2rem; }
+.suggestion-title { font-weight: 600; }
+.suggestion-why { font-size: 0.85rem; color: var(--text-secondary); }
+.suggestion-tip {
+    font-size: 0.8125rem;
+    color: #8a5a00;
+}
+:root[data-theme="dark"] .suggestion-tip { color: var(--warning-color); }
+
+.preview-rules { margin: 0.25rem 0 0.75rem; padding-left: 1.25rem; font-size: 0.85rem; }
+
+.dns-manual {
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
+}
+.dns-manual > summary {
+    cursor: pointer;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+.confirm-inline { display: inline-flex; align-items: center; gap: 0.4rem; }
+.link-quiet { color: var(--text-secondary); text-decoration: underline; }
+.link-quiet:hover { color: var(--primary-color); }
+
+.matrix-key .key {
+    display: inline-block;
+    padding: 0 0.4rem;
+    border-radius: 4px;
+    font-weight: 600;
+}
+.matrix-key .key.is-good { background: color-mix(in srgb, var(--success-color) 13%, var(--surface)); color: var(--success-color); }
+.matrix-key .key.is-warn { background: color-mix(in srgb, var(--warning-color) 16%, var(--surface)); color: #8a5a00; }
+:root[data-theme="dark"] .matrix-key .key.is-warn { color: var(--warning-color); }
+.matrix-key .key.is-bad { background: color-mix(in srgb, var(--state-broken) 13%, var(--surface)); color: var(--state-broken); }
+.matrix-key .key.is-neutral { background: var(--surface-sunken); color: var(--text-secondary); }
+
+/* Hoverable help, same tooltip as the matrix cells. */
+.help-tip {
+    position: relative;
+    display: inline-block;
+    cursor: help;
+    border-bottom: 1px dotted var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+h3 .help-tip {
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    width: 1.4em;
+    height: 1.4em;
+    line-height: 1.3em;
+    text-align: center;
+    margin-left: 0.3rem;
+}
+.help-tip .tip { width: 22rem; max-width: 80vw; font-weight: 400; text-align: left; }
+.help-tip:hover .tip, .help-tip:focus .tip { opacity: 1; visibility: visible; }
+
+/* ---------- Rule check ---------- */
+.rule-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+table.rule-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; min-width: 760px; }
+table.rule-table th { text-align: left; color: var(--text-secondary); font-weight: 600; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); }
+table.rule-table td { padding: 0.5rem; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+table.rule-table tr.is-off td { opacity: 0.6; }
+.rule-status { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-weight: 600; white-space: nowrap; }
+.rule-status.is-issue { background: color-mix(in srgb, var(--state-broken) 13%, var(--surface)); color: var(--state-broken); }
+.rule-status.is-improve { background: color-mix(in srgb, var(--warning-color) 16%, var(--surface)); color: #8a5a00; }
+:root[data-theme="dark"] .rule-status.is-improve { color: var(--warning-color); }
+.rule-status.is-info { background: var(--surface-sunken); color: var(--text-secondary); }
+.rule-status.is-ok { background: color-mix(in srgb, var(--success-color) 13%, var(--surface)); color: var(--success-color); }
+.rule-finding { margin-bottom: 0.25rem; }
+.rule-finding.is-issue { color: var(--state-broken); }

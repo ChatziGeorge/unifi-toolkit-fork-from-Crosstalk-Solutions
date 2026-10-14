@@ -30,66 +30,134 @@ print_success() {
     printf "${GREEN}✓${NC} %s\n" "$1"
 }
 
+# Messages go to stderr so they stay visible when called inside $(...)
 print_error() {
-    printf "${RED}✗${NC} %s\n" "$1"
+    printf "${RED}✗${NC} %s\n" "$1" >&2
 }
 
 print_warning() {
-    printf "${YELLOW}⚠${NC} %s\n" "$1"
+    printf "${YELLOW}⚠${NC} %s\n" "$1" >&2
 }
 
 print_info() {
-    printf "${CYAN}ℹ${NC} %s\n" "$1"
+    printf "${CYAN}ℹ${NC} %s\n" "$1" >&2
 }
 
-# Check if Python 3 is available
+# Python is optional: it is only a helper for key generation / password
+# hashing, and both have non-Python fallbacks (openssl, htpasswd).
 check_python() {
+    PYTHON_CMD=""
     if command -v python3 &> /dev/null; then
         PYTHON_CMD="python3"
     elif command -v python &> /dev/null; then
         PYTHON_CMD="python"
     else
-        print_error "Python 3 is required but not found!"
-        print_info "Please install Python 3.9-3.12 and try again."
-        exit 1
+        print_warning "Python 3 not found - using openssl/htpasswd instead"
+        return 0
     fi
 
-    # Verify Python version is compatible
-    PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    MAJOR=$($PYTHON_CMD -c 'import sys; print(sys.version_info.major)')
-    MINOR=$($PYTHON_CMD -c 'import sys; print(sys.version_info.minor)')
-
-    if [ "$MAJOR" -lt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 9 ]); then
-        print_error "Python 3.9 or higher is required (found $PYTHON_VERSION)"
-        exit 1
-    fi
-
+    PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "unknown")
     print_success "Python $PYTHON_VERSION detected"
 }
 
-# Generate Fernet encryption key
+# Generate Fernet encryption key (urlsafe base64 of 32 random bytes).
+# Standard library only - no 'cryptography' package needed.
 generate_encryption_key() {
-    $PYTHON_CMD -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || {
+    local key=""
+    if [ -n "$PYTHON_CMD" ]; then
+        key=$($PYTHON_CMD -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null || true)
+    fi
+    if [ -z "$key" ] && command -v openssl &> /dev/null; then
+        key=$(openssl rand -base64 32 | tr '+/' '-_')
+    fi
+    if [ ${#key} -ne 44 ]; then
         print_error "Failed to generate encryption key"
-        print_info "Make sure cryptography is installed: pip install cryptography"
+        print_info "Install Python 3 or openssl and try again."
         exit 1
-    }
+    fi
+    echo "$key"
 }
 
-# Hash password with bcrypt
-# Uses stdin to avoid shell injection vulnerabilities with special characters
+# Hash password with bcrypt.
+# Tries Python bcrypt first, then htpasswd (built into macOS; on Ubuntu:
+# sudo apt install apache2-utils). The password is passed on stdin so it
+# never appears in the process list.
 hash_password() {
     local password="$1"
-    echo "$password" | $PYTHON_CMD -c "
+    local hash=""
+    if [ -n "$PYTHON_CMD" ]; then
+        hash=$(printf '%s\n' "$password" | $PYTHON_CMD -c "
 import sys
 import bcrypt
 password = sys.stdin.readline().rstrip('\n')
 print(bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
-" 2>/dev/null || {
+" 2>/dev/null || true)
+    fi
+    if [ -z "$hash" ] && command -v htpasswd &> /dev/null; then
+        hash=$(printf '%s\n' "$password" | htpasswd -niBC 12 user 2>/dev/null | cut -d: -f2- | tr -d '\r\n' || true)
+    fi
+    if [[ ! "$hash" =~ ^\$2[aby]\$ ]]; then
         print_error "Failed to hash password"
-        print_info "Make sure bcrypt is installed: pip install bcrypt"
+        print_info "Install either the Python bcrypt package (pip install bcrypt)"
+        print_info "or htpasswd (Ubuntu: sudo apt install apache2-utils) and try again."
         exit 1
-    }
+    fi
+    echo "$hash"
+}
+
+# Validate a LAN host: an IPv4 address, a single-label name, or a dotted name
+# (toolkit.lan, nas.local, server.home.arpa, ...)
+validate_lan_host() {
+    local host="$1"
+    if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        return 0
+    fi
+    if [[ "$host" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# Ask for admin username + password; sets AUTH_USERNAME and AUTH_PASSWORD_HASH
+prompt_credentials() {
+    echo "Enter the admin username for UI Toolkit access."
+    echo ""
+    read -p "Admin username [admin]: " AUTH_USERNAME
+    AUTH_USERNAME=${AUTH_USERNAME:-admin}
+    print_success "Username: $AUTH_USERNAME"
+    echo ""
+
+    echo "Enter the admin password."
+    echo "Requirements: 12+ characters, uppercase, lowercase, and numbers"
+    echo ""
+
+    while true; do
+        read -s -p "Admin password: " password
+        echo ""
+
+        if ! validate_password "$password"; then
+            echo ""
+            continue
+        fi
+
+        read -s -p "Confirm password: " password_confirm
+        echo ""
+
+        if [ "$password" != "$password_confirm" ]; then
+            echo ""
+            print_error "Passwords do not match. Please try again."
+            echo ""
+            continue
+        fi
+
+        break
+    done
+
+    echo ""
+    print_info "Hashing password..."
+    AUTH_PASSWORD_HASH=$(hash_password "$password")
+    print_success "Password configured"
+    echo ""
 }
 
 # Validate password meets requirements
@@ -182,14 +250,23 @@ main() {
     echo "     • No HTTPS (uses HTTP)"
     echo "     • Access via http://localhost:8000"
     echo ""
-    printf "  2) ${BOLD}Production${NC} - Internet-facing deployment\n"
+    printf "  2) ${BOLD}LAN with login${NC} - Running on your LAN, password protected\n"
+    echo "     • Authentication required"
+    echo "     • HTTPS with a self-signed certificate (no public domain needed)"
+    echo "     • Access via https://<server IP or LAN name>"
+    echo ""
+    printf "  3) ${BOLD}Production${NC} - Internet-facing deployment\n"
     echo "     • Authentication required"
     echo "     • HTTPS with Let's Encrypt"
     echo "     • Requires a domain name"
     echo ""
 
+    # LAN mode runs the app in production (auth) mode behind Caddy with
+    # 'tls internal' - the session cookie is HTTPS-only, so plain HTTP
+    # cannot hold a login.
+    LAN_MODE=false
     while true; do
-        read -p "Select deployment type [1-2]: " deployment_choice
+        read -p "Select deployment type [1-3]: " deployment_choice
         case $deployment_choice in
             1)
                 DEPLOYMENT_TYPE="local"
@@ -197,16 +274,25 @@ main() {
                 ;;
             2)
                 DEPLOYMENT_TYPE="production"
+                LAN_MODE=true
+                break
+                ;;
+            3)
+                DEPLOYMENT_TYPE="production"
                 break
                 ;;
             *)
-                print_error "Invalid choice. Please enter 1 or 2."
+                print_error "Invalid choice. Please enter 1, 2 or 3."
                 ;;
         esac
     done
 
     echo ""
-    print_success "Selected: $DEPLOYMENT_TYPE deployment"
+    if [ "$LAN_MODE" == true ]; then
+        print_success "Selected: LAN with login deployment"
+    else
+        print_success "Selected: $DEPLOYMENT_TYPE deployment"
+    fi
     echo ""
 
     # Step 2: Generate encryption key
@@ -222,8 +308,31 @@ main() {
     AUTH_USERNAME=""
     AUTH_PASSWORD_HASH=""
 
+    # Step 3: LAN-with-login configuration
+    if [ "$LAN_MODE" == true ]; then
+        printf "${BOLD}Step 3: LAN Configuration${NC}\n"
+        echo ""
+        echo "Enter the IP address or LAN hostname you will open in the browser"
+        echo "(e.g., 192.168.1.50, toolkit.lan, nas.local)."
+        echo "Caddy issues a self-signed certificate for exactly this name."
+        echo ""
+
+        while true; do
+            read -p "Server IP or LAN hostname: " DOMAIN
+            if validate_lan_host "$DOMAIN"; then
+                break
+            else
+                print_error "Invalid IP address or hostname. Please try again."
+            fi
+        done
+
+        print_success "Host: $DOMAIN"
+        echo ""
+
+        prompt_credentials
+
     # Step 3: Production-specific configuration
-    if [ "$DEPLOYMENT_TYPE" == "production" ]; then
+    elif [ "$DEPLOYMENT_TYPE" == "production" ]; then
         printf "${BOLD}Step 3: Production Configuration${NC}\n"
         echo ""
 
@@ -256,46 +365,7 @@ main() {
         print_success "Domain: $DOMAIN"
         echo ""
 
-        # Admin username
-        echo "Enter the admin username for UI Toolkit access."
-        echo ""
-        read -p "Admin username [admin]: " AUTH_USERNAME
-        AUTH_USERNAME=${AUTH_USERNAME:-admin}
-        print_success "Username: $AUTH_USERNAME"
-        echo ""
-
-        # Admin password
-        echo "Enter the admin password."
-        echo "Requirements: 12+ characters, uppercase, lowercase, and numbers"
-        echo ""
-
-        while true; do
-            read -s -p "Admin password: " password
-            echo ""
-
-            if ! validate_password "$password"; then
-                echo ""
-                continue
-            fi
-
-            read -s -p "Confirm password: " password_confirm
-            echo ""
-
-            if [ "$password" != "$password_confirm" ]; then
-                echo ""
-                print_error "Passwords do not match. Please try again."
-                echo ""
-                continue
-            fi
-
-            break
-        done
-
-        echo ""
-        print_info "Hashing password..."
-        AUTH_PASSWORD_HASH=$(hash_password "$password")
-        print_success "Password configured"
-        echo ""
+        prompt_credentials
     fi
 
     # Step 4: Write .env file
@@ -325,11 +395,24 @@ DEPLOYMENT_TYPE=$DEPLOYMENT_TYPE
 EOF
 
     # Add production-specific settings
-    if [ "$DEPLOYMENT_TYPE" == "production" ]; then
+    if [ "$LAN_MODE" == true ]; then
+        cat >> .env << EOF
+
+# LAN with login: Caddy serves HTTPS with a self-signed certificate
+# (tls internal) for this IP / LAN hostname - no public domain needed
+DOMAIN=$DOMAIN
+CADDYFILE=Caddyfile.lan
+EOF
+    elif [ "$DEPLOYMENT_TYPE" == "production" ]; then
         cat >> .env << EOF
 
 # Domain name for HTTPS (production only)
 DOMAIN=$DOMAIN
+EOF
+    fi
+
+    if [ "$DEPLOYMENT_TYPE" == "production" ]; then
+        cat >> .env << EOF
 
 # Admin credentials (production only)
 AUTH_USERNAME=$AUTH_USERNAME
@@ -404,8 +487,15 @@ EOF
         print_success "Data directory already exists"
     fi
 
-    # Set proper permissions for Docker (UID 1000 matches toolkit user in container)
-    if command -v docker &> /dev/null; then
+    # Set proper permissions for Docker (UID 1000 matches toolkit user in container).
+    # Not on macOS: Docker Desktop / OrbStack write bind mounts as the Mac user,
+    # so data/ must stay owned by that user - chowning it to 1000 locks it out.
+    if [ "$(uname -s)" == "Darwin" ]; then
+        if [ -n "$SUDO_USER" ]; then
+            chown "$SUDO_USER" data .env 2>/dev/null || true
+        fi
+        print_success "macOS: data directory left owned by your user (Docker Desktop/OrbStack)"
+    elif command -v docker &> /dev/null; then
         chown 1000:1000 data 2>/dev/null || chmod 755 data 2>/dev/null || true
         print_success "Set data directory permissions for Docker (UID 1000)"
     fi
@@ -419,7 +509,25 @@ EOF
     printf "${GREEN}=================================================================${NC}\n"
     echo ""
 
-    if [ "$DEPLOYMENT_TYPE" == "production" ]; then
+    if [ "$LAN_MODE" == true ]; then
+        printf "${BOLD}Next Steps:${NC}\n"
+        echo ""
+        echo "  1. Start the application with Caddy (HTTPS + Auth):"
+        printf "     ${CYAN}docker compose --profile production up -d${NC}\n"
+        echo ""
+        echo "  2. Access your toolkit at:"
+        printf "     ${CYAN}https://%s${NC}\n" "$DOMAIN"
+        echo "     Your browser will warn about the self-signed certificate the"
+        echo "     first time - accept it once. (To remove the warning, trust"
+        echo "     Caddy's root CA: docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .)"
+        echo ""
+        echo "  3. Login with:"
+        printf "     Username: ${CYAN}%s${NC}\n" "$AUTH_USERNAME"
+        printf "     Password: ${CYAN}(the password you just set)${NC}\n"
+        echo ""
+        print_warning "Do not port-forward this to the internet. For remote access,"
+        print_warning "use a VPN (WireGuard, Tailscale, UniFi VPN)."
+    elif [ "$DEPLOYMENT_TYPE" == "production" ]; then
         printf "${BOLD}Next Steps:${NC}\n"
         echo ""
         printf "  1. Ensure DNS A record for ${CYAN}%s${NC} points to this server\n" "$DOMAIN"
