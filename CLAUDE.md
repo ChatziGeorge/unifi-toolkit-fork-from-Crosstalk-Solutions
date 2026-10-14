@@ -191,6 +191,20 @@ All v2 events are normalized before the scheduler sees them — the scheduler on
   silently. Removed the on-screen text claiming the controller ignores the change.
   Column stays read-only because the control is site-level, not per-network.
 
+### v1.13.3 (RELEASED 2026-10-14 — tag `v1.13.3` on `05d3895`, `:latest`)
+- #136: `dhcp_dns_of()` gates on `dhcpd_dns_enabled`. UniFi keeps the old
+  `dhcpd_dns_1..4` after the override is switched off, and per the reporter
+  they can't be cleared from the UI. `dhcp_dns_conflicts()` now uses it too.
+- #138: `P.check_resolver_ips()` refuses non-IP entries (DNS Lockdown +
+  `dhcp_dns_payload`); `dnsResolverList()` splits on `/[\s,]+/`.
+- #139: `UDMEA4C` = UDM Beast (IPS-capable).
+- #140: the v2 traffic-flows fetchers raise `TrafficFlowsUnavailable` on
+  failure instead of returning `[]`, so an empty answer no longer falls back
+  to the removed `stat/ips/event`. Measured: 6,474 404 lines in Chris's own
+  `:latest` log before the fix; none against the live UCG after it.
+- House Arrest 0.15.14, Threat Watch 0.5.2. #137 (Site Magic VPN ERROR on
+  Network 11) is held open for the Network 11 check.
+
 ### v1.13.2 (RELEASED 2026-10-13 — tag `v1.13.2` on `8fdd275`, `:latest`)
 - Hotfix #133: the controller returns `vlan` as a string on some networks and
   an int on others in ONE `rest/networkconf` reply (2 reporters, UDM SE + UDM
